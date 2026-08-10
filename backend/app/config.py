@@ -19,7 +19,7 @@ class Settings(BaseSettings):
             return ["http://localhost:5173"]
         if v.startswith("["):
             return json.loads(v)
-        return [o.strip() for o in v.split(",") if o.strip()]
+        return [o.strip().rstrip("/") for o in v.split(",") if o.strip()]
 
     @model_validator(mode="after")
     def _resolve_username(self) -> "Settings":
