@@ -1,0 +1,17 @@
+source,target,relation,weight
+Alice,Bob,KNOWS,1
+Bob,Carol,WORKS_WITH,3
+Carol,David,MENTORS,2
+David,Eve,REPORTS_TO,1
+Eve,Alice,COLLABORATES,4
+Alice,Carol,KNOWS,2
+Bob,David,WORKS_WITH,1
+Carol,Eve,MENTORS,3
+Frank,Alice,KNOWS,1
+Frank,Bob,COLLABORATES,2
+Grace,Carol,WORKS_WITH,1
+Grace,David,KNOWS,3
+Henry,Eve,COLLABORATES,2
+Henry,Frank,REPORTS_TO,1
+Iris,Grace,MENTORS,4
+Iris,Henry,KNOWS,1
