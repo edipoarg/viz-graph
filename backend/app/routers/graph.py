@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from neo4j import AsyncDriver
 
-from ..db import get_driver
+from ..db import get_driver, get_session
 from ..schemas import GraphOut, NodeOut, EdgeOut
 
 router = APIRouter()
@@ -14,7 +14,7 @@ async def get_graph(
     search: str | None = Query(default=None),
     driver: AsyncDriver = Depends(get_driver),
 ) -> GraphOut:
-    async with driver.session() as session:
+    async with get_session(driver) as session:
         ds_result = await session.run(
             "MATCH (d:Dataset {id: $id}) RETURN d", id=dataset_id
         )
@@ -75,7 +75,7 @@ async def get_relation_types(
     dataset_id: str,
     driver: AsyncDriver = Depends(get_driver),
 ) -> list[str]:
-    async with driver.session() as session:
+    async with get_session(driver) as session:
         result = await session.run(
             "MATCH ()-[e:EDGE {dataset_id: $id}]->() RETURN DISTINCT e.type AS t ORDER BY t",
             id=dataset_id,

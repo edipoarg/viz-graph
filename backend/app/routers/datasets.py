@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
 from neo4j import AsyncDriver
 
-from ..db import get_driver
+from ..db import get_driver, get_session
 from ..schemas import DatasetCreate, DatasetOut, ImportConfig
 
 router = APIRouter()
@@ -43,7 +43,7 @@ async def preview_csv(file: UploadFile = File(...)) -> dict:
 
 @router.get("", response_model=list[DatasetOut])
 async def list_datasets(driver: AsyncDriver = Depends(get_driver)) -> list[DatasetOut]:
-    async with driver.session() as session:
+    async with get_session(driver) as session:
         result = await session.run(
             """
             MATCH (d:Dataset)
@@ -65,7 +65,7 @@ async def create_dataset(
 ) -> DatasetOut:
     dataset_id = str(uuid.uuid4())
     created_at = datetime.now(timezone.utc).isoformat()
-    async with driver.session() as session:
+    async with get_session(driver) as session:
         await session.run(
             "CREATE (d:Dataset {id: $id, name: $name, created_at: $created_at})",
             id=dataset_id,
@@ -80,7 +80,7 @@ async def delete_dataset(
     dataset_id: str,
     driver: AsyncDriver = Depends(get_driver),
 ) -> None:
-    async with driver.session() as session:
+    async with get_session(driver) as session:
         result = await session.run(
             "MATCH (d:Dataset {id: $id}) RETURN d",
             id=dataset_id,
@@ -131,7 +131,7 @@ async def _import_stream(
     batch = []
 
     async def flush_batch(b: list) -> None:
-        async with driver.session() as session:
+        async with get_session(driver) as session:
             await session.run(
                 """
                 UNWIND $rows AS row
@@ -194,7 +194,7 @@ async def import_csv(
     batch_size: int = Form(default=500),
     driver: AsyncDriver = Depends(get_driver),
 ) -> StreamingResponse:
-    async with driver.session() as session:
+    async with get_session(driver) as session:
         result = await session.run(
             "MATCH (d:Dataset {id: $id}) RETURN d", id=dataset_id
         )
