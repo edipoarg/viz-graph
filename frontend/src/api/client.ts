@@ -1,7 +1,10 @@
 import axios from "axios";
 import type { Dataset, CsvPreview, GraphData } from "../types";
 
-const api = axios.create({ baseURL: "/api" });
+// VITE_API_URL is set at build time on Render; falls back to relative path for local dev
+const BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+
+const api = axios.create({ baseURL: `${BASE}/api` });
 
 export const datasetsApi = {
   list: () => api.get<Dataset[]>("/datasets").then((r) => r.data),
@@ -31,7 +34,7 @@ export const datasetsApi = {
     fd.append("relation_col", cols.relation_col);
     if (cols.weight_col) fd.append("weight_col", cols.weight_col);
 
-    return fetch(`/api/datasets/${datasetId}/import`, {
+    return fetch(`${BASE}/api/datasets/${datasetId}/import`, {
       method: "POST",
       body: fd,
     }).then(async (res) => {

@@ -1,0 +1,28 @@
+services:
+  # ── Backend ──────────────────────────────────────────────────────────────
+  - type: web
+    name: edipo-viz-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    envVars:
+      - key: NEO4J_URI
+        sync: false          # set manually in Render dashboard
+      - key: NEO4J_USER
+        sync: false
+      - key: NEO4J_PASSWORD
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false          # set to your frontend Render URL, e.g. ["https://edipo-viz.onrender.com"]
+
+  # ── Frontend ─────────────────────────────────────────────────────────────
+  - type: web
+    name: edipo-viz-frontend
+    runtime: static
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    rootDir: frontend
+    envVars:
+      - key: VITE_API_URL
+        sync: false          # set to your backend Render URL, e.g. https://edipo-viz-backend.onrender.com
