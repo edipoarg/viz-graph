@@ -150,3 +150,4 @@ Documentación interactiva disponible en `http://localhost:8000/docs`.
 ## Licencia
 
 MIT
+make dev-backend

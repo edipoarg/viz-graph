@@ -1,6 +1,7 @@
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .auth import require_auth
 from .config import settings
 from .db import lifespan
 from .routers import datasets, graph
@@ -16,8 +17,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(datasets.router, prefix="/api/datasets", tags=["datasets"])
-app.include_router(graph.router, prefix="/api/datasets", tags=["graph"])
+app.include_router(
+    datasets.router,
+    prefix="/api/datasets",
+    tags=["datasets"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    graph.router,
+    prefix="/api/datasets",
+    tags=["graph"],
+    dependencies=[Depends(require_auth)],
+)
 
 
 @app.get("/health")

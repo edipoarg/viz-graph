@@ -1,11 +1,29 @@
 /// <reference types="vite/client" />
 import axios from "axios";
 import type { Dataset, CsvPreview, GraphData } from "../types";
+import { clearCredentials, getAuthHeader } from "./auth";
 
 // VITE_API_URL is set at build time on Render; falls back to relative path for local dev
 const BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 
 const api = axios.create({ baseURL: `${BASE}/api` });
+
+api.interceptors.request.use((config) => {
+  const header = getAuthHeader();
+  if (header) config.headers.Authorization = header;
+  return config;
+});
+
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    if (err.response?.status === 401) {
+      clearCredentials();
+      window.location.href = "/login";
+    }
+    return Promise.reject(err);
+  }
+);
 
 export const datasetsApi = {
   list: () => api.get<Dataset[]>("/datasets").then((r) => r.data),
@@ -37,8 +55,14 @@ export const datasetsApi = {
 
     return fetch(`${BASE}/api/datasets/${datasetId}/import`, {
       method: "POST",
+      headers: { ...(getAuthHeader() ? { Authorization: getAuthHeader()! } : {}) },
       body: fd,
     }).then(async (res) => {
+      if (res.status === 401) {
+        clearCredentials();
+        window.location.href = "/login";
+        throw new Error("Unauthorized");
+      }
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
       const reader = res.body.getReader();
       const decoder = new TextDecoder();

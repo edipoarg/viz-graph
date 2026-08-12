@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     neo4j_database: str = "neo4j"     # Aura provides a named database
     # Accept JSON array or comma-separated string; defaults to localhost origins
     cors_origins: str = '["http://localhost:5173","http://localhost:3000"]'
+    app_username: str = "edipo"
+    app_password: str = "12345678"
 
     @property
     def cors_origins_list(self) -> list[str]:

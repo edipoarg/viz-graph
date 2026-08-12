@@ -26,7 +26,8 @@ dev-backend: .env
 	pip install -q -r requirements.txt && \
 	set -a && . ../.env && set +a && \
 	NEO4J_URI=$${NEO4J_URI:-bolt://localhost:7687} \
-	uvicorn app.main:app --reload --port 8000
+	SSL_CERT_FILE=$$(python -c "import certifi; print(certifi.where())") \
+	uvicorn app.main:app --reload --port 8001
 
 dev-frontend:
 	cd frontend && \
