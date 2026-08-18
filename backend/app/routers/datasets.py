@@ -29,8 +29,6 @@ def _read_csv_bytes(raw: bytes) -> tuple[list[str], list[dict]]:
 
 @router.post("/preview")
 async def preview_csv(file: UploadFile = File(...)) -> dict:
-    if file.content_type not in ("text/csv", "text/plain", "application/octet-stream", "application/vnd.ms-excel"):
-        raise HTTPException(400, "File must be a CSV (text/csv)")
     raw = await file.read(MAX_FILE_SIZE + 1)
     if len(raw) > MAX_FILE_SIZE:
         raise HTTPException(413, "File exceeds 50 MB limit")
@@ -212,8 +210,6 @@ async def import_csv(
     except Exception as exc:
         raise HTTPException(422, str(exc)) from exc
 
-    if file.content_type not in ("text/csv", "text/plain", "application/octet-stream", "application/vnd.ms-excel"):
-        raise HTTPException(400, "File must be a CSV")
     raw = await file.read(MAX_FILE_SIZE + 1)
     if len(raw) > MAX_FILE_SIZE:
         raise HTTPException(413, "File exceeds 50 MB limit")
