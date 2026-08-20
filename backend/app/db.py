@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from neo4j import AsyncGraphDatabase, AsyncDriver, AsyncSession
@@ -29,6 +30,18 @@ async def close_driver() -> None:
         _driver = None
 
 
+async def _keepalive_loop() -> None:
+    while True:
+        await asyncio.sleep(24 * 60 * 60)
+        try:
+            driver = await get_driver()
+            async with driver.session(database=settings.neo4j_database) as session:
+                await session.run("RETURN 1")
+            logger.info("Keepalive ping OK")
+        except Exception as exc:
+            logger.warning("Keepalive ping failed: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(_app):
     driver = await get_driver()
@@ -44,5 +57,7 @@ async def lifespan(_app):
             )
     except Exception as exc:
         logger.warning("Neo4j unreachable at startup, skipping schema init: %s", exc)
+    task = asyncio.create_task(_keepalive_loop())
     yield
+    task.cancel()
     await close_driver()
