@@ -138,7 +138,7 @@ export default function GraphView({ data, onNodeSelect, selectedNodeId }: Props)
 
     cy.on("tap", "node", (e) => {
       const n = e.target;
-      onNodeSelect({ id: n.id(), name: n.data("label"), dataset_id: "" });
+      onNodeSelect({ id: n.id(), name: n.data("label"), dataset_id: "", role: n.data("role") ?? "both" });
     });
     cy.on("tap", (e) => {
       if (e.target === cy) onNodeSelect(null);
