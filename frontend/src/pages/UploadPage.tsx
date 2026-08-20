@@ -71,7 +71,8 @@ export default function UploadPage() {
       setWeightCol(find("weight", "w", "value", "cost"));
       setStep(1);
     } catch (err: unknown) {
-      setPreviewError(err instanceof Error ? err.message : "Error al leer el CSV");
+      const detail = (err as { response?: { data?: { detail?: string } } }).response?.data?.detail;
+      setPreviewError(detail ?? (err instanceof Error ? err.message : "Error al leer el CSV"));
     } finally {
       setLoadingPreview(false);
     }
@@ -80,7 +81,12 @@ export default function UploadPage() {
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     const f = e.dataTransfer.files[0];
-    if (f) handleFileChange(f);
+    if (!f) return;
+    if (!f.name.toLowerCase().endsWith(".csv") && f.type !== "text/csv" && f.type !== "text/plain") {
+      setPreviewError("Solo se aceptan archivos CSV. Exportá tu archivo como CSV desde Excel o Numbers.");
+      return;
+    }
+    handleFileChange(f);
   }, []);
 
   const handleImport = async () => {
@@ -98,7 +104,8 @@ export default function UploadPage() {
       );
       setImportResult(result);
     } catch (err: unknown) {
-      setImportError(err instanceof Error ? err.message : "Error en la importación");
+      const detail = (err as { response?: { data?: { detail?: string } } }).response?.data?.detail;
+      setImportError(detail ?? (err instanceof Error ? err.message : "Error en la importación"));
     } finally {
       setImporting(false);
     }

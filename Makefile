@@ -13,20 +13,21 @@ logs:
 
 # ── Desarrollo local ─────────────────────────────────────────────────────────
 
-dev: .env
+dev:
 	@trap 'kill 0' INT; \
 	$(MAKE) dev-backend & \
 	$(MAKE) dev-frontend & \
 	wait
 
-dev-backend: .env
+dev-backend:
 	cd backend && \
 	[ -d .venv ] || python3 -m venv .venv && \
 	. .venv/bin/activate && \
 	pip install -q -r requirements.txt && \
-	set -a && . ../.env && set +a && \
-	NEO4J_URI=$${NEO4J_URI:-bolt://localhost:7687} \
-	SSL_CERT_FILE=$$(python -c "import certifi; print(certifi.where())") \
+	NEO4J_URI=bolt://localhost:7687 \
+	NEO4J_USER=neo4j \
+	NEO4J_PASSWORD=edipo_secret \
+	NEO4J_DATABASE=neo4j \
 	uvicorn app.main:app --reload --port 8001
 
 dev-frontend:

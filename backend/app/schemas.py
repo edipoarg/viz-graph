@@ -34,7 +34,7 @@ class ImportConfig(BaseModel):
     def safe_column_name(cls, v: str | None) -> str | None:
         if v is None:
             return v
-        if not re.match(r"^[A-Za-z0-9 _\-\.]+$", v):
+        if not re.match(r"^[\w\s\-\.]+$", v, re.UNICODE):
             raise ValueError(f"Invalid column name: {v!r}")
         return v
 
@@ -43,6 +43,7 @@ class NodeOut(BaseModel):
     id: str
     name: str
     dataset_id: str
+    role: str = "both"  # "source", "target", or "both"
 
 
 class EdgeOut(BaseModel):

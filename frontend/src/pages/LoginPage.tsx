@@ -30,9 +30,16 @@ export default function LoginPage() {
     try {
       await datasetsApi.list();
       navigate(from, { replace: true });
-    } catch {
-      setCredentials("", ""); // clear invalid credentials
-      setError("Usuario o contraseña incorrectos");
+    } catch (err: unknown) {
+      setCredentials("", "");
+      const status = (err as { response?: { status?: number } }).response?.status;
+      if (status === 401) {
+        setError("Usuario o contraseña incorrectos");
+      } else if (status === 500 || status == null) {
+        setError("Error del servidor. Verificá que el backend y Neo4j estén corriendo.");
+      } else {
+        setError(`Error inesperado (${status})`);
+      }
     } finally {
       setLoading(false);
     }

@@ -24,6 +24,7 @@ export interface GraphNode {
   id: string;
   name: string;
   dataset_id: string;
+  role: "source" | "target" | "both";
 }
 
 export interface GraphEdge {

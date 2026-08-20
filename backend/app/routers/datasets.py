@@ -17,13 +17,55 @@ router = APIRouter()
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 
 
+# Binary format magic bytes that are definitely not CSV
+_BINARY_MAGIC = [
+    (b"PK",        "archivo ZIP (.xlsx, .numbers, .docx). Exportá el archivo como CSV primero."),
+    (b"%PDF",      "archivo PDF. Exportá los datos como CSV primero."),
+    (b"\xd0\xcf",  "archivo Office antiguo (.xls, .doc). Guardá como CSV primero."),
+    (b"\x89PNG",   "imagen PNG."),
+    (b"\xff\xd8",  "imagen JPEG."),
+    (b"GIF8",      "imagen GIF."),
+]
+
+
 def _read_csv_bytes(raw: bytes) -> tuple[list[str], list[dict]]:
-    text = raw.decode("utf-8-sig")
-    reader = csv.DictReader(io.StringIO(text))
-    if reader.fieldnames is None:
-        raise ValueError("CSV has no header row")
-    headers = [str(h).strip() for h in reader.fieldnames]
-    rows = [row for row in reader]
+    if not raw:
+        raise ValueError("El archivo está vacío.")
+
+    for magic, description in _BINARY_MAGIC:
+        if raw[:len(magic)] == magic:
+            raise ValueError(f"El archivo parece ser un {description}")
+
+    # Try encodings from most to least specific
+    text: str | None = None
+    for enc in ("utf-8-sig", "utf-16", "utf-8", "latin-1"):
+        try:
+            text = raw.decode(enc)
+            break
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    if text is None:
+        raise ValueError("No se pudo leer el archivo. Asegurate de que sea un CSV con codificación UTF-8 o Latin-1.")
+
+    text = text.replace("\x00", "")  # strip NUL bytes from malformed encodings
+    text = text.strip()
+    if not text:
+        raise ValueError("El archivo está vacío o solo contiene espacios en blanco.")
+
+    try:
+        reader = csv.DictReader(io.StringIO(text, newline=""))
+        if reader.fieldnames is None:
+            raise ValueError("El archivo no tiene encabezados. La primera fila debe contener los nombres de las columnas.")
+        headers = [str(h).strip() for h in reader.fieldnames if h is not None and str(h).strip()]
+        if not headers:
+            raise ValueError("Las columnas del encabezado están vacías.")
+        rows = list(reader)
+    except csv.Error as exc:
+        raise ValueError(f"Error al parsear el CSV: {exc}") from exc
+
+    if not rows:
+        raise ValueError("El archivo tiene encabezados pero no tiene filas de datos.")
+
     return headers, rows
 
 
@@ -31,11 +73,11 @@ def _read_csv_bytes(raw: bytes) -> tuple[list[str], list[dict]]:
 async def preview_csv(file: UploadFile = File(...)) -> dict:
     raw = await file.read(MAX_FILE_SIZE + 1)
     if len(raw) > MAX_FILE_SIZE:
-        raise HTTPException(413, "File exceeds 50 MB limit")
+        raise HTTPException(413, "El archivo supera el límite de 50 MB.")
     try:
         headers, rows = _read_csv_bytes(raw)
     except (UnicodeDecodeError, csv.Error, ValueError) as exc:
-        raise HTTPException(400, f"Invalid CSV: {exc}") from exc
+        raise HTTPException(400, str(exc)) from exc
     return {"columns": headers, "preview": rows[:5], "total_rows": len(rows)}
 
 

@@ -47,11 +47,15 @@ async def get_graph(
         records = await result.data()
 
     nodes_map: dict[str, NodeOut] = {}
+    src_set: set[str] = set()
+    tgt_set: set[str] = set()
     edges: list[EdgeOut] = []
 
     for r in records:
         src_name = r["src_name"]
         tgt_name = r["tgt_name"]
+        src_set.add(src_name)
+        tgt_set.add(tgt_name)
         if src_name not in nodes_map:
             nodes_map[src_name] = NodeOut(id=src_name, name=src_name, dataset_id=dataset_id)
         if tgt_name not in nodes_map:
@@ -66,6 +70,11 @@ async def get_graph(
                 weight=r["weight"],
             )
         )
+
+    for name, node in nodes_map.items():
+        is_src = name in src_set
+        is_tgt = name in tgt_set
+        node.role = "both" if (is_src and is_tgt) else ("source" if is_src else "target")
 
     return GraphOut(nodes=list(nodes_map.values()), edges=edges)
 

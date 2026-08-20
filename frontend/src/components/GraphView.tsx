@@ -30,11 +30,23 @@ export default function GraphView({ data, onNodeSelect, selectedNodeId }: Props)
   useEffect(() => {
     if (!containerRef.current) return;
 
+    const degree: Record<string, number> = {};
+    for (const e of data.edges) {
+      degree[e.source] = (degree[e.source] ?? 0) + 1;
+      degree[e.target] = (degree[e.target] ?? 0) + 1;
+    }
+    const maxDeg = Math.max(1, ...Object.values(degree));
+    // sqrt scale anchored so degree=1 → 15px, degree=maxDeg → 80px
+    const nodeSize = (id: string) => {
+      const d = degree[id] ?? 1;
+      return 15 + 65 * Math.sqrt((d - 1) / Math.max(1, maxDeg - 1));
+    };
+
     const cy = cytoscape({
       container: containerRef.current,
       elements: [
         ...data.nodes.map((n: GraphNode) => ({
-          data: { id: n.id, label: n.name },
+          data: { id: n.id, label: n.name, role: n.role ?? "both", degree: degree[n.id] ?? 0, size: nodeSize(n.id) },
         })),
         ...data.edges.map((e: GraphEdge) => ({
           data: {
@@ -62,16 +74,33 @@ export default function GraphView({ data, onNodeSelect, selectedNodeId }: Props)
             "background-color": "#7c4dff",
             "label": "data(label)",
             "color": "#ffffff",
-            "font-size": "11px",
-            "text-valign": "center",
+            "font-size": "10px",
+            "text-valign": "bottom",
             "text-halign": "center",
-            "width": 40,
-            "height": 40,
+            "text-margin-y": 6,
+            "width": "data(size)",
+            "height": "data(size)",
             "border-width": 2,
             "border-color": "#1e1e2e",
-            "text-wrap": "ellipsis",
-            "text-max-width": "60px",
+            "text-wrap": "wrap",
+            "text-max-width": "120px",
+            "text-background-color": "#1e1e2e",
+            "text-background-opacity": 0.7,
+            "text-background-padding": "3px",
+            "text-background-shape": "roundrectangle",
           },
+        },
+        {
+          selector: "node[role = 'source']",
+          style: { "background-color": "#7c4dff" },
+        },
+        {
+          selector: "node[role = 'target']",
+          style: { "background-color": "#e91e63" },
+        },
+        {
+          selector: "node[role = 'both']",
+          style: { "background-color": "#ff6d00" },
         },
         {
           selector: "node:selected",
