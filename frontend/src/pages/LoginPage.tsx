@@ -58,7 +58,7 @@ export default function LoginPage() {
         <Box display="flex" alignItems="center" gap={1}>
           <BubbleChartIcon sx={{ fontSize: 40, color: "primary.main" }} />
           <Typography variant="h4" fontWeight={700}>
-            Edipo Viz
+            Edipo Viz 🚀
           </Typography>
         </Box>
 
