@@ -57,7 +57,7 @@ pip install -r requirements.txt
 # Con Neo4j corriendo localmente:
 export NEO4J_URI=bolt://localhost:7687
 export NEO4J_USER=neo4j
-export NEO4J_PASSWORD=edipo_secret
+export NEO4J_PASSWORD=your_neo4j_password
 
 uvicorn app.main:app --reload
 ```
@@ -95,7 +95,7 @@ pytest app/tests/ -v
 |----------|-------------|---------|
 | `NEO4J_URI` | URI Bolt de Neo4j | `bolt://localhost:7687` |
 | `NEO4J_USER` | Usuario de Neo4j | `neo4j` |
-| `NEO4J_PASSWORD` | Contraseña de Neo4j | `edipo_secret` |
+| `NEO4J_PASSWORD` | Contraseña de Neo4j | `your_neo4j_password` |
 | `CORS_ORIGINS` | Orígenes CORS permitidos (JSON list) | `["http://localhost:5173"]` |
 
 ## Estructura del proyecto
