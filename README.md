@@ -1,95 +1,76 @@
-# Edipo Viz — CSV → Graph Explorer
+# Edipo Viz — Visualizador de Grafos
 
-Open-source MVP para importar archivos CSV y visualizar grafos interactivos usando Neo4j, FastAPI y React.
+Herramienta para cargar datos relacionales desde archivos CSV y explorarlos como grafos interactivos. Pensada para analizar, por ejemplo, redes de personas, organizaciones y sus vínculos.
+
+Los datos se almacenan en **Neo4j**, una base de datos de grafos que permite modelar relaciones complejas. El backend expone una API REST construida con **FastAPI**, y el frontend está desarrollado en **React** con visualización mediante **Cytoscape.js**.
 
 ## Stack
 
 | Capa | Tecnología |
 |------|-----------|
-| Base de datos | Neo4j 5 Community (Docker) |
-| Backend | FastAPI + driver oficial Neo4j |
-| Frontend | React 18 + MUI 5 + Cytoscape.js |
-| Infra | Docker Compose |
+| Base de datos | Neo4j 5 Community |
+| Backend | Python 3.11 · FastAPI · driver oficial Neo4j |
+| Frontend | React 18 · MUI 5 · Cytoscape.js |
+| Infra local | Docker Compose |
 
-## Características
+## Funcionalidades
 
-- **Subir CSV** con preview de las primeras 5 filas
+- **Subir CSV** con preview de las primeras filas
 - **Mapear columnas**: nodo origen, nodo destino, tipo de relación y peso opcional
 - **Importación por lotes** con progreso en tiempo real (Server-Sent Events)
-- **Merge sin duplicados** mediante `MERGE` en Neo4j
-- **Datasets independientes** aislados por `dataset_id`
-- **Visualización interactiva**: zoom, desplazamiento, selección, layout automático
+- **Datasets independientes** aislados entre sí
+- **Visualización interactiva**: zoom, desplazamiento, layout automático
 - **Búsqueda** de nodos por nombre
 - **Filtros** por tipo de relación
 - **Listar, abrir y eliminar** datasets existentes
-- **Credenciales de Neo4j** nunca expuestas al frontend
 
-## Levantar con Docker Compose
+## Requisitos
+
+- [Docker](https://docs.docker.com/get-docker/) y Docker Compose
+- [Make](https://www.gnu.org/software/make/) (incluido en macOS y Linux)
+- Para desarrollo local sin Docker: Python 3.11+ y Node.js 18+
+
+## Levantar el entorno local
+
+El entorno local usa Docker Compose para correr Neo4j, el backend y el frontend juntos.
 
 ```bash
-# 1. Clonar
-git clone https://github.com/tu-usuario/edipo-viz.git
-cd edipo-viz
+# 1. Clonar el repositorio
+git clone https://github.com/edipoarg/viz-graph.git
+cd viz-graph
 
 # 2. Configurar variables de entorno
 cp .env.example .env
-# Editá .env si querés cambiar la contraseña de Neo4j
+# Editá .env con tu contraseña de Neo4j y credenciales de la app
 
-# 3. Levantar
-docker compose up --build
-
-# Servicios:
-#   Frontend  → http://localhost:5173
-#   API       → http://localhost:8000/docs
-#   Neo4j UI  → http://localhost:7474
+# 3. Levantar todos los servicios
+make up
 ```
+
+Una vez levantado:
+
+| Servicio | URL |
+|----------|-----|
+| Frontend | http://localhost:5173 |
+| API (docs) | http://localhost:8000/docs |
+| Neo4j Browser | http://localhost:7474 |
+
+Para detener: `make down`
 
 ## Desarrollo local (sin Docker)
 
-### Backend
+Requiere Neo4j corriendo por separado (por ejemplo, con `make up` solo para la base de datos).
 
 ```bash
-cd backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# Con Neo4j corriendo localmente:
-export NEO4J_URI=bolt://localhost:7687
-export NEO4J_USER=neo4j
-export NEO4J_PASSWORD=your_neo4j_password
-
-uvicorn app.main:app --reload
+# Levantar backend y frontend en paralelo
+make dev
 ```
 
-### Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-## Datos de ejemplo
-
-El archivo `data/example.csv` incluye un grafo de personas con relaciones `KNOWS`, `WORKS_WITH`, `MENTORS`, `REPORTS_TO` y `COLLABORATES`.
-
-```
-source,target,relation,weight
-Alice,Bob,KNOWS,1
-Bob,Carol,WORKS_WITH,3
-...
-```
-
-## Ejecutar tests del backend
-
-```bash
-cd backend
-# Requiere Neo4j corriendo (local o Docker)
-pytest app/tests/ -v
-```
+Esto inicia el backend en `http://localhost:8001` y el frontend en `http://localhost:5173`.
 
 ## Variables de entorno
+
+Copiá `.env.example` a `.env` y completá los valores:
 
 | Variable | Descripción | Default |
 |----------|-------------|---------|
@@ -147,7 +128,22 @@ edipo-viz/
 
 Documentación interactiva disponible en `http://localhost:8000/docs`.
 
-## Licencia
+## Flujo de trabajo con Git
 
-MIT
-make dev-backend
+Las ramas siempre salen de `dev`. Nunca se trabaja directamente sobre `main`.
+
+| Prefijo | Cuándo usarlo |
+|---------|---------------|
+| `feature/` | Nueva funcionalidad |
+| `bug/` | Corrección de un bug |
+
+```bash
+git checkout dev
+git pull origin dev
+git checkout -b feature/nombre-del-feature
+# ... trabajar ...
+git push origin feature/nombre-del-feature
+# Abrir PR hacia dev
+```
+
+Una vez que `dev` está estable y probado, se hace PR de `dev` → `main` para deployar.
