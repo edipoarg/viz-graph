@@ -7,12 +7,12 @@ class Settings(BaseSettings):
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_username: str = ""          # Aura calls it USERNAME
-    neo4j_password: str = "edipo_secret"
+    neo4j_password: str = ""
     neo4j_database: str = "neo4j"     # Aura provides a named database
     # Accept JSON array or comma-separated string; defaults to localhost origins
     cors_origins: str = '["http://localhost:5173","http://localhost:3000"]'
-    app_username: str = "edipo"
-    app_password: str = "12345678"
+    app_username: str = ""
+    app_password: str = ""
 
     @property
     def cors_origins_list(self) -> list[str]:
