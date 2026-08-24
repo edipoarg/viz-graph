@@ -55,6 +55,22 @@ async def lifespan(_app):
                 "CREATE INDEX graph_node_dataset IF NOT EXISTS "
                 "FOR (n:GraphNode) ON (n.dataset_id)"
             )
+            await session.run(
+                "CREATE INDEX graph_node_nodeid IF NOT EXISTS "
+                "FOR (n:GraphNode) ON (n.node_id)"
+            )
+            await session.run(
+                "CREATE INDEX graph_node_dataset_nodeid IF NOT EXISTS "
+                "FOR (n:GraphNode) ON (n.dataset_id, n.node_id)"
+            )
+            await session.run(
+                "CREATE INDEX graph_node_cuit IF NOT EXISTS "
+                "FOR (n:GraphNode) ON (n.cuit)"
+            )
+            await session.run(
+                "CREATE FULLTEXT INDEX idx_node_search IF NOT EXISTS "
+                "FOR (n:GraphNode) ON EACH [n.name, n.cuit, n.actividad_descripcion]"
+            )
     except Exception as exc:
         logger.warning("Neo4j unreachable at startup, skipping schema init: %s", exc)
     task = asyncio.create_task(_keepalive_loop())

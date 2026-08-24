@@ -30,6 +30,7 @@ export const datasetsApi = {
   create: (name: string) =>
     api.post<Dataset>("/datasets", { name }).then((r) => r.data),
   delete: (id: string) => api.delete(`/datasets/${id}`),
+  get: (id: string) => api.get<Dataset>(`/datasets/${id}`).then((r) => r.data),
   preview: (file: File) => {
     const fd = new FormData();
     fd.append("file", file);
@@ -104,4 +105,8 @@ export const graphApi = {
       .then((r) => r.data),
   relationTypes: (id: string) =>
     api.get<string[]>(`/datasets/${id}/graph/relation-types`).then((r) => r.data),
+  search: (id: string, params: { q: string; field: "name" | "cuit" | "actividad" }) =>
+    api
+      .get<GraphData>(`/datasets/${id}/search`, { params })
+      .then((r) => r.data),
 };

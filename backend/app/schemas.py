@@ -20,6 +20,7 @@ class DatasetOut(BaseModel):
     created_at: str
     node_count: int = 0
     edge_count: int = 0
+    system: bool = False
 
 
 class ImportConfig(BaseModel):
@@ -44,6 +45,9 @@ class NodeOut(BaseModel):
     name: str
     dataset_id: str
     role: str = "both"  # "source", "target", or "both"
+    tipo: str | None = None
+    cuit: str | None = None
+    actividad_descripcion: str | None = None
 
 
 class EdgeOut(BaseModel):

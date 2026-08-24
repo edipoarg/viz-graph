@@ -46,7 +46,11 @@ export default function GraphView({ data, onNodeSelect, selectedNodeId }: Props)
       container: containerRef.current,
       elements: [
         ...data.nodes.map((n: GraphNode) => ({
-          data: { id: n.id, label: n.name, role: n.role ?? "both", degree: degree[n.id] ?? 0, size: nodeSize(n.id) },
+          data: {
+            id: n.id, label: n.name, role: n.role ?? "both",
+            tipo: n.tipo ?? "",
+            degree: degree[n.id] ?? 0, size: nodeSize(n.id),
+          },
         })),
         ...data.edges.map((e: GraphEdge) => ({
           data: {
@@ -90,16 +94,26 @@ export default function GraphView({ data, onNodeSelect, selectedNodeId }: Props)
             "text-background-shape": "roundrectangle",
           },
         },
+        // Colores por tipo (dataset sistema)
         {
-          selector: "node[role = 'source']",
+          selector: "node[tipo = 'Sociedad']",
           style: { "background-color": "#7c4dff" },
         },
         {
-          selector: "node[role = 'target']",
+          selector: "node[tipo = 'Persona']",
+          style: { "background-color": "#ff6d00" },
+        },
+        // Colores por rol (datasets de usuario sin tipo)
+        {
+          selector: "node[tipo = ''][role = 'source']",
+          style: { "background-color": "#7c4dff" },
+        },
+        {
+          selector: "node[tipo = ''][role = 'target']",
           style: { "background-color": "#e91e63" },
         },
         {
-          selector: "node[role = 'both']",
+          selector: "node[tipo = ''][role = 'both']",
           style: { "background-color": "#ff6d00" },
         },
         {
