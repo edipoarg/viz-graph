@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -20,13 +20,25 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import SearchIcon from "@mui/icons-material/Search";
 import FilterListIcon from "@mui/icons-material/FilterList";
 import CloseIcon from "@mui/icons-material/Close";
+import AccountTreeIcon from "@mui/icons-material/AccountTree";
+import AltRouteIcon from "@mui/icons-material/AltRoute";
+import UndoIcon from "@mui/icons-material/Undo";
 import { useNavigate, useParams } from "react-router-dom";
 import { datasetsApi, graphApi } from "../api/client";
 import type { GraphData, GraphNode } from "../types";
 import GraphView from "../components/GraphView";
 
-const DRAWER_WIDTH = 280;
+const DRAWER_WIDTH = 300;
 type SearchField = "name" | "cuit" | "actividad";
+
+function mergeGraphData(base: GraphData, incoming: GraphData): GraphData {
+  const nodeIds = new Set(base.nodes.map((n) => n.id));
+  const edgeIds = new Set(base.edges.map((e) => e.id));
+  return {
+    nodes: [...base.nodes, ...incoming.nodes.filter((n) => !nodeIds.has(n.id))],
+    edges: [...base.edges, ...incoming.edges.filter((e) => !edgeIds.has(e.id))],
+  };
+}
 
 export default function GraphPage() {
   const { id } = useParams<{ id: string }>();
@@ -36,6 +48,7 @@ export default function GraphPage() {
   const [graphData, setGraphData] = useState<GraphData | null>(null);
   const [relTypes, setRelTypes] = useState<string[]>([]);
   const [activeRelTypes, setActiveRelTypes] = useState<string[]>([]);
+  const [activeEdgeTypes, setActiveEdgeTypes] = useState<string[]>([]);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [searchField, setSearchField] = useState<SearchField>("name");
@@ -43,15 +56,39 @@ export default function GraphPage() {
   const [error, setError] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
 
+  // Undo history
+  const [history, setHistory] = useState<GraphData[]>([]);
+
+  // Expand state
+  const [expanding, setExpanding] = useState(false);
+
+  // Shortest path state
+  const [pathFrom, setPathFrom] = useState("");
+  const [pathTo, setPathTo] = useState("");
+  const [pathLoading, setPathLoading] = useState(false);
+  const [pathError, setPathError] = useState<string | null>(null);
+
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  // Fetch dataset metadata to know if it's a system dataset
+  // Derive available edge types from current graph and reset filter when they change
+  const availableEdgeTypes = useMemo(
+    () => [...new Set((graphData?.edges ?? []).map((e) => e.type))].sort(),
+    [graphData]
+  );
+  useEffect(() => { setActiveEdgeTypes(availableEdgeTypes); }, [availableEdgeTypes.join("|")]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // filteredData drives the stats counter (node/edge counts visible to user)
+  const filteredData = useMemo((): GraphData | null => {
+    if (!graphData) return null;
+    if (activeEdgeTypes.length === availableEdgeTypes.length) return graphData;
+    return { nodes: graphData.nodes, edges: graphData.edges.filter((e) => activeEdgeTypes.includes(e.type)) };
+  }, [graphData, activeEdgeTypes, availableEdgeTypes.length]);
+
   useEffect(() => {
     if (!id) return;
     datasetsApi.get(id).then((ds) => setIsSystem(ds.system)).catch(() => {});
   }, [id]);
 
-  // Load relation types once (only for user datasets)
   useEffect(() => {
     if (!id || isSystem !== false) return;
     graphApi
@@ -94,7 +131,7 @@ export default function GraphPage() {
   }, [id, isSystem, activeRelTypes, debouncedSearch, relTypes.length, searchField]);
 
   useEffect(() => {
-    if (isSystem === null) return; // wait until we know the dataset type
+    if (isSystem === null) return;
     loadGraph();
   }, [loadGraph]);
 
@@ -110,6 +147,61 @@ export default function GraphPage() {
     );
   };
 
+  const handleExpand = () => {
+    if (!id || !selectedNode || !graphData) return;
+    setHistory((h) => [...h, graphData]);
+    setExpanding(true);
+    const relFilter =
+      activeEdgeTypes.length > 0 && activeEdgeTypes.length < availableEdgeTypes.length
+        ? activeEdgeTypes
+        : undefined;
+    graphApi
+      .expand(id, selectedNode.id, relFilter)
+      .then((incoming) => {
+        setGraphData((prev) => mergeGraphData(prev ?? { nodes: [], edges: [] }, incoming));
+      })
+      .catch(() => setError("Error al expandir el nodo"))
+      .finally(() => setExpanding(false));
+  };
+
+  const handleUndo = () => {
+    setHistory((h) => {
+      if (h.length === 0) return h;
+      setGraphData(h[h.length - 1]);
+      return h.slice(0, -1);
+    });
+  };
+
+  const handleHideNode = (nodeId: string) => {
+    setGraphData((prev) =>
+      prev
+        ? {
+            nodes: prev.nodes.filter((n) => n.id !== nodeId),
+            edges: prev.edges.filter((e) => e.source !== nodeId && e.target !== nodeId),
+          }
+        : prev
+    );
+    if (selectedNode?.id === nodeId) setSelectedNode(null);
+  };
+
+  const handlePathSearch = () => {
+    if (!id || !pathFrom.trim() || !pathTo.trim()) return;
+    if (graphData && graphData.nodes.length > 0) setHistory((h) => [...h, graphData]);
+    setPathLoading(true);
+    setPathError(null);
+    graphApi
+      .path(id, pathFrom.trim(), pathTo.trim())
+      .then((data) => {
+        if (data.nodes.length === 0) {
+          setPathError("No se encontró un camino entre los dos nodos.");
+        } else {
+          setGraphData(data);
+        }
+      })
+      .catch(() => setPathError("Error al buscar el camino."))
+      .finally(() => setPathLoading(false));
+  };
+
   const relColors = [
     "#7c4dff", "#03dac6", "#ff6d00", "#e91e63", "#00bcd4",
     "#8bc34a", "#ff5722", "#9c27b0", "#ffc107", "#2196f3",
@@ -117,7 +209,6 @@ export default function GraphPage() {
 
   const isEmpty = graphData?.nodes.length === 0;
   const showSearchPrompt = isSystem && isEmpty && !debouncedSearch && !loading;
-
   return (
     <Box display="flex" height="100vh" overflow="hidden">
       {/* Sidebar */}
@@ -129,9 +220,14 @@ export default function GraphPage() {
         <Button startIcon={<ArrowBackIcon />} onClick={() => navigate("/")} size="small">
           Datasets
         </Button>
+        {history.length > 0 && (
+          <Button size="small" startIcon={<UndoIcon fontSize="small" />} onClick={handleUndo}>
+            Deshacer ({history.length})
+          </Button>
+        )}
         <Divider />
 
-        {/* Campo de búsqueda: selector solo para dataset sistema */}
+        {/* Búsqueda principal */}
         {isSystem && (
           <FormControl size="small">
             <InputLabel>Buscar por</InputLabel>
@@ -178,11 +274,40 @@ export default function GraphPage() {
           }}
         />
 
-        {/* Filtros de relación solo para datasets de usuario */}
+        {/* Filtros de tipo de relación (todos los datasets) */}
+        {availableEdgeTypes.length > 0 && (
+          <Box>
+            <Typography variant="caption" color="text.secondary" display="flex" alignItems="center" gap={0.5} mb={0.5}>
+              <FilterListIcon fontSize="inherit" /> Tipo de relación
+            </Typography>
+            <Box display="flex" flexWrap="wrap" gap={0.5}>
+              {availableEdgeTypes.map((t, i) => (
+                <Chip
+                  key={t}
+                  label={t}
+                  size="small"
+                  onClick={() =>
+                    setActiveEdgeTypes((prev) =>
+                      prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]
+                    )
+                  }
+                  variant={activeEdgeTypes.includes(t) ? "filled" : "outlined"}
+                  sx={{
+                    bgcolor: activeEdgeTypes.includes(t) ? relColors[i % relColors.length] : undefined,
+                    borderColor: relColors[i % relColors.length],
+                    color: activeEdgeTypes.includes(t) ? "#fff" : relColors[i % relColors.length],
+                  }}
+                />
+              ))}
+            </Box>
+          </Box>
+        )}
+
+        {/* Filtros por relType para datasets de usuario (server-side) */}
         {!isSystem && relTypes.length > 0 && (
           <Box>
             <Typography variant="caption" color="text.secondary" display="flex" alignItems="center" gap={0.5} mb={0.5}>
-              <FilterListIcon fontSize="inherit" /> Filtrar por tipo de relación
+              <FilterListIcon fontSize="inherit" /> Filtrar carga (servidor)
             </Typography>
             <Box display="flex" flexWrap="wrap" gap={0.5}>
               {relTypes.map((t, i) => (
@@ -206,16 +331,14 @@ export default function GraphPage() {
         <Divider />
 
         {graphData && graphData.nodes.length > 0 && (
-          <Box>
-            <Typography variant="caption" color="text.secondary">
-              {graphData.nodes.length} nodos · {graphData.edges.length} aristas
-            </Typography>
-          </Box>
+          <Typography variant="caption" color="text.secondary">
+            {graphData.nodes.length} nodos · {(filteredData?.edges ?? graphData.edges).length} aristas visibles
+          </Typography>
         )}
 
         {/* Panel del nodo seleccionado */}
         {selectedNode && (
-          <Box mt={1}>
+          <Box>
             <Divider sx={{ mb: 1 }} />
             <Typography variant="subtitle2" fontWeight={700} gutterBottom>
               Nodo seleccionado
@@ -230,9 +353,14 @@ export default function GraphPage() {
                   color: "#fff" }}
               />
             )}
-            {selectedNode.cuit && (
+            {selectedNode.tipo === "Sociedad" && selectedNode.cuit && (
               <Typography variant="caption" display="block" color="text.secondary">
                 CUIT: {selectedNode.cuit}
+              </Typography>
+            )}
+            {selectedNode.tipo === "Persona" && (
+              <Typography variant="caption" display="block" color="text.secondary">
+                DNI: {selectedNode.id}
               </Typography>
             )}
             {selectedNode.actividad_descripcion && (
@@ -240,10 +368,56 @@ export default function GraphPage() {
                 Actividad: {selectedNode.actividad_descripcion}
               </Typography>
             )}
-            <Button size="small" sx={{ mt: 0.5 }} onClick={() => setSelectedNode(null)}>
-              Deseleccionar
-            </Button>
+            <Box display="flex" gap={1} mt={1} flexWrap="wrap">
+              <Button
+                size="small"
+                variant="contained"
+                startIcon={expanding ? <CircularProgress size={14} color="inherit" /> : <AccountTreeIcon fontSize="small" />}
+                disabled={expanding}
+                onClick={handleExpand}
+                sx={{ flexGrow: 1 }}
+              >
+                Expandir vecinos
+              </Button>
+              <Button size="small" onClick={() => setSelectedNode(null)}>
+                Deseleccionar
+              </Button>
+            </Box>
           </Box>
+        )}
+
+        {/* Camino más corto (solo dataset sistema) */}
+        {isSystem && (
+          <>
+            <Divider />
+            <Typography variant="subtitle2" fontWeight={700} display="flex" alignItems="center" gap={0.5}>
+              <AltRouteIcon fontSize="small" /> Camino más corto
+            </Typography>
+            <TextField
+              size="small"
+              label="Desde (node_id / CUIT / DNI)"
+              value={pathFrom}
+              onChange={(e) => setPathFrom(e.target.value)}
+            />
+            <TextField
+              size="small"
+              label="Hasta (node_id / CUIT / DNI)"
+              value={pathTo}
+              onChange={(e) => setPathTo(e.target.value)}
+            />
+            {pathError && (
+              <Typography variant="caption" color="error">{pathError}</Typography>
+            )}
+            <Button
+              size="small"
+              variant="outlined"
+              disabled={pathLoading || !pathFrom.trim() || !pathTo.trim()}
+              startIcon={pathLoading ? <CircularProgress size={14} /> : undefined}
+              onClick={handlePathSearch}
+            >
+              Buscar camino
+            </Button>
+          </>
         )}
       </Paper>
 
@@ -283,6 +457,8 @@ export default function GraphPage() {
             data={graphData}
             onNodeSelect={setSelectedNode}
             selectedNodeId={selectedNode?.id ?? null}
+            onHideNode={handleHideNode}
+            activeEdgeTypes={activeEdgeTypes}
           />
         )}
       </Box>

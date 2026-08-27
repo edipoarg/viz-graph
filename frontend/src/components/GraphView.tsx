@@ -1,11 +1,13 @@
-import { useEffect, useRef } from "react";
-import cytoscape, { type Core } from "cytoscape";
+import { useEffect, useRef, useState } from "react";
+import cytoscape, { type Core, type NodeSingular } from "cytoscape";
 import type { GraphData, GraphEdge, GraphNode } from "../types";
 
 interface Props {
   data: GraphData;
   onNodeSelect: (node: GraphNode | null) => void;
   selectedNodeId: string | null;
+  onHideNode: (nodeId: string) => void;
+  activeEdgeTypes: string[];
 }
 
 const RELATION_COLORS: Record<string, string> = {};
@@ -23,162 +25,290 @@ function relColor(type: string): string {
   return RELATION_COLORS[type];
 }
 
-export default function GraphView({ data, onNodeSelect, selectedNodeId }: Props) {
+function calcDegree(edges: GraphEdge[]): Record<string, number> {
+  const deg: Record<string, number> = {};
+  for (const e of edges) {
+    deg[e.source] = (deg[e.source] ?? 0) + 1;
+    deg[e.target] = (deg[e.target] ?? 0) + 1;
+  }
+  return deg;
+}
+
+function nodeSize(id: string, deg: Record<string, number>, maxDeg: number): number {
+  const d = deg[id] ?? 1;
+  return 15 + 65 * Math.sqrt((d - 1) / Math.max(1, maxDeg - 1));
+}
+
+const LAYOUT_OPTS = {
+  name: "cose",
+  animate: false,
+  nodeRepulsion: () => 120000,
+  idealEdgeLength: () => 250,
+  gravity: 0.05,
+  numIter: 800,
+  coolingFactor: 0.95,
+  minTemp: 1.0,
+};
+
+const STYLES: cytoscape.StylesheetStyle[] = [
+  {
+    selector: "node",
+    style: {
+      "background-color": "#7c4dff",
+      "label": "data(label)",
+      "color": "#ffffff",
+      "font-size": "10px",
+      "text-valign": "bottom",
+      "text-halign": "center",
+      "text-margin-y": 6,
+      "width": "data(size)",
+      "height": "data(size)",
+      "border-width": 2,
+      "border-color": "#1e1e2e",
+      "text-wrap": "wrap",
+      "text-max-width": "120px",
+      "text-background-color": "#1e1e2e",
+      "text-background-opacity": 0.7,
+      "text-background-padding": "3px",
+      "text-background-shape": "roundrectangle",
+    },
+  },
+  { selector: "node[tipo = 'Sociedad']", style: { "background-color": "#7c4dff" } },
+  { selector: "node[tipo = 'Persona']",  style: { "background-color": "#ff6d00" } },
+  { selector: "node[tipo = ''][role = 'source']", style: { "background-color": "#7c4dff" } },
+  { selector: "node[tipo = ''][role = 'target']", style: { "background-color": "#e91e63" } },
+  { selector: "node[tipo = ''][role = 'both']",   style: { "background-color": "#ff6d00" } },
+  { selector: "node:selected", style: { "background-color": "#03dac6", "border-color": "#ffffff", "border-width": 3 } },
+  {
+    selector: "edge",
+    style: {
+      "width": 2,
+      "line-color": "data(color)",
+      "target-arrow-color": "data(color)",
+      "target-arrow-shape": "triangle",
+      "curve-style": "bezier",
+      "label": "data(type)",
+      "font-size": "9px",
+      "color": "#aaaaaa",
+      "text-rotation": "autorotate",
+      "text-margin-y": -8,
+      "opacity": 0.8,
+    },
+  },
+  { selector: "edge:selected", style: { "width": 4, opacity: 1 } },
+];
+
+export default function GraphView({
+  data, onNodeSelect, selectedNodeId, onHideNode, activeEdgeTypes,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
+  const positionsRef = useRef<Record<string, { x: number; y: number }>>({});
+  const [hoverBtn, setHoverBtn] = useState<{ id: string; x: number; y: number } | null>(null);
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
+  const onNodeSelectRef = useRef(onNodeSelect);
+  const onHideNodeRef = useRef(onHideNode);
+  const selectedNodeIdRef = useRef(selectedNodeId);
+  useEffect(() => { onNodeSelectRef.current = onNodeSelect; }, [onNodeSelect]);
+  useEffect(() => { onHideNodeRef.current = onHideNode; }, [onHideNode]);
+  useEffect(() => { selectedNodeIdRef.current = selectedNodeId; }, [selectedNodeId]);
+
+  // ── Recreate Cytoscape on data change, preserving node positions ──────────
   useEffect(() => {
-    if (!containerRef.current) return;
+    if (!containerRef.current || data.nodes.length === 0) return;
 
-    const degree: Record<string, number> = {};
-    for (const e of data.edges) {
-      degree[e.source] = (degree[e.source] ?? 0) + 1;
-      degree[e.target] = (degree[e.target] ?? 0) + 1;
+    const saved = positionsRef.current;
+
+    // Save positions from previous instance before destroying
+    if (cyRef.current) {
+      cyRef.current.nodes().forEach((n) => {
+        saved[n.id()] = { ...n.position() };
+      });
+      cyRef.current.destroy();
+      cyRef.current = null;
     }
-    const maxDeg = Math.max(1, ...Object.values(degree));
-    // sqrt scale anchored so degree=1 → 15px, degree=maxDeg → 80px
-    const nodeSize = (id: string) => {
-      const d = degree[id] ?? 1;
-      return 15 + 65 * Math.sqrt((d - 1) / Math.max(1, maxDeg - 1));
-    };
+
+    const deg = calcDegree(data.edges);
+    const maxDeg = Math.max(1, ...Object.values(deg));
+
+    // Detect fresh search (no overlap with saved positions) vs expansion/undo
+    const hasOverlap = data.nodes.some((n) => saved[n.id]);
+
+    // For fresh search, clear stale positions
+    if (!hasOverlap) positionsRef.current = {};
+
+    // Pre-position new nodes around the selected anchor
+    const newNodes = data.nodes.filter((n) => !saved[n.id]);
+    if (hasOverlap && newNodes.length > 0) {
+      const anchorId = selectedNodeIdRef.current ?? "";
+      const anchor = saved[anchorId] ?? { x: 400, y: 300 };
+      const R = Math.max(200, newNodes.length * 15);
+      newNodes.forEach((n, i) => {
+        saved[n.id] = {
+          x: anchor.x + R * Math.cos((2 * Math.PI * i) / newNodes.length),
+          y: anchor.y + R * Math.sin((2 * Math.PI * i) / newNodes.length),
+        };
+      });
+    }
 
     const cy = cytoscape({
       container: containerRef.current,
       elements: [
-        ...data.nodes.map((n: GraphNode) => ({
+        ...data.nodes.map((n) => ({
           data: {
             id: n.id, label: n.name, role: n.role ?? "both",
-            tipo: n.tipo ?? "",
-            degree: degree[n.id] ?? 0, size: nodeSize(n.id),
+            tipo: n.tipo ?? "", cuit: n.cuit ?? "", actividad: n.actividad_descripcion ?? "",
+            degree: deg[n.id] ?? 0, size: nodeSize(n.id, deg, maxDeg),
           },
+          ...(hasOverlap && saved[n.id] ? { position: saved[n.id] } : {}),
         })),
-        ...data.edges.map((e: GraphEdge) => ({
+        ...data.edges.map((e) => ({
           data: {
-            id: e.id,
-            source: e.source,
-            target: e.target,
-            type: e.type,
-            weight: e.weight,
-            color: relColor(e.type),
+            id: e.id, source: e.source, target: e.target,
+            type: e.type, weight: e.weight, color: relColor(e.type),
           },
         })),
       ],
-      layout: {
-        name: "cose",
-        animate: false,
-        nodeRepulsion: () => 8000,
-        idealEdgeLength: () => 100,
-        gravity: 0.25,
-        numIter: 300,
-      },
-      style: [
-        {
-          selector: "node",
-          style: {
-            "background-color": "#7c4dff",
-            "label": "data(label)",
-            "color": "#ffffff",
-            "font-size": "10px",
-            "text-valign": "bottom",
-            "text-halign": "center",
-            "text-margin-y": 6,
-            "width": "data(size)",
-            "height": "data(size)",
-            "border-width": 2,
-            "border-color": "#1e1e2e",
-            "text-wrap": "wrap",
-            "text-max-width": "120px",
-            "text-background-color": "#1e1e2e",
-            "text-background-opacity": 0.7,
-            "text-background-padding": "3px",
-            "text-background-shape": "roundrectangle",
-          },
-        },
-        // Colores por tipo (dataset sistema)
-        {
-          selector: "node[tipo = 'Sociedad']",
-          style: { "background-color": "#7c4dff" },
-        },
-        {
-          selector: "node[tipo = 'Persona']",
-          style: { "background-color": "#ff6d00" },
-        },
-        // Colores por rol (datasets de usuario sin tipo)
-        {
-          selector: "node[tipo = ''][role = 'source']",
-          style: { "background-color": "#7c4dff" },
-        },
-        {
-          selector: "node[tipo = ''][role = 'target']",
-          style: { "background-color": "#e91e63" },
-        },
-        {
-          selector: "node[tipo = ''][role = 'both']",
-          style: { "background-color": "#ff6d00" },
-        },
-        {
-          selector: "node:selected",
-          style: {
-            "background-color": "#03dac6",
-            "border-color": "#ffffff",
-            "border-width": 3,
-          },
-        },
-        {
-          selector: "edge",
-          style: {
-            "width": 2,
-            "line-color": "data(color)",
-            "target-arrow-color": "data(color)",
-            "target-arrow-shape": "triangle",
-            "curve-style": "bezier",
-            "label": "data(type)",
-            "font-size": "9px",
-            "color": "#aaaaaa",
-            "text-rotation": "autorotate",
-            "text-margin-y": -8,
-            "opacity": 0.8,
-          },
-        },
-        {
-          selector: "edge:selected",
-          style: { "width": 4, opacity: 1 },
-        },
-      ],
+      layout: hasOverlap
+        ? { name: "preset" }
+        // CoSE crashes with no edges; use circle for seed-only results
+        : data.edges.length > 0
+          ? LAYOUT_OPTS
+          : { name: "circle", animate: false, padding: 60 },
+      style: STYLES,
       minZoom: 0.1,
       maxZoom: 5,
       wheelSensitivity: 0.3,
     });
 
+    // Save positions after layout completes
+    cy.nodes().forEach((n) => { positionsRef.current[n.id()] = { ...n.position() }; });
+
+    // Fit viewport when new nodes were added (expansion)
+    if (hasOverlap && newNodes.length > 0) cy.fit(undefined, 40);
+
+    // ── Drag neighbors ────────────────────────────────────────────────────
+    let dragStartPos: { x: number; y: number } | null = null;
+    const neighborStartPos = new Map<string, { x: number; y: number }>();
+
+    cy.on("grabon", "node", (e) => {
+      const node = e.target as NodeSingular;
+      dragStartPos = { ...node.position() };
+      neighborStartPos.clear();
+      node.neighborhood("node").forEach((nb: NodeSingular) => {
+        neighborStartPos.set(nb.id(), { ...nb.position() });
+      });
+    });
+    cy.on("drag", "node", (e) => {
+      if (!dragStartPos) return;
+      const node = e.target as NodeSingular;
+      const cur = node.position();
+      const dx = cur.x - dragStartPos.x;
+      const dy = cur.y - dragStartPos.y;
+      node.neighborhood("node").forEach((nb: NodeSingular) => {
+        const sp = neighborStartPos.get(nb.id());
+        if (sp && !nb.grabbed()) nb.position({ x: sp.x + dx * 0.5, y: sp.y + dy * 0.5 });
+      });
+    });
+    cy.on("free", "node", () => {
+      // Persist updated positions after drag
+      cy.nodes().forEach((n) => { positionsRef.current[n.id()] = { ...n.position() }; });
+      dragStartPos = null;
+      neighborStartPos.clear();
+    });
+
+    // ── X button on hover ─────────────────────────────────────────────────
+    cy.on("mouseover", "node", (e) => {
+      clearTimeout(hideTimerRef.current);
+      const node = e.target as NodeSingular;
+      const rp = node.renderedPosition();
+      const r = node.renderedOuterHeight() / 2;
+      setHoverBtn({ id: node.id(), x: rp.x + r * 0.75, y: rp.y - r * 0.75 });
+    });
+    cy.on("mouseout", "node", () => {
+      hideTimerRef.current = setTimeout(() => setHoverBtn(null), 300);
+    });
+    cy.on("viewport", () => setHoverBtn(null));
+
     cy.on("tap", "node", (e) => {
       const n = e.target;
-      onNodeSelect({ id: n.id(), name: n.data("label"), dataset_id: "", role: n.data("role") ?? "both" });
+      onNodeSelectRef.current({
+        id: n.id(), name: n.data("label"), dataset_id: "",
+        role: n.data("role") ?? "both",
+        tipo: n.data("tipo") || undefined,
+        cuit: n.data("cuit") || undefined,
+        actividad_descripcion: n.data("actividad") || undefined,
+      });
     });
-    cy.on("tap", (e) => {
-      if (e.target === cy) onNodeSelect(null);
-    });
+    cy.on("tap", (e) => { if (e.target === cy) onNodeSelectRef.current(null); });
 
     cyRef.current = cy;
     return () => {
-      cy.destroy();
-      cyRef.current = null;
+      if (cyRef.current) {
+        cyRef.current.nodes().forEach((n) => { positionsRef.current[n.id()] = { ...n.position() }; });
+        cyRef.current.destroy();
+        cyRef.current = null;
+      }
     };
   }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Highlight selected node
+  // ── Edge visibility filter ────────────────────────────────────────────────
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    if (activeEdgeTypes.length === 0) {
+      cy.edges().style("display", "element");
+      return;
+    }
+    cy.edges().forEach((e) => {
+      e.style("display", activeEdgeTypes.includes(e.data("type")) ? "element" : "none");
+    });
+  }, [activeEdgeTypes]);
+
+  // ── Highlight selected node ───────────────────────────────────────────────
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy) return;
     cy.nodes().unselect();
-    if (selectedNodeId) {
-      cy.getElementById(selectedNodeId).select();
-    }
+    if (selectedNodeId) cy.getElementById(selectedNodeId).select();
   }, [selectedNodeId]);
 
   return (
-    <div
-      ref={containerRef}
-      style={{ width: "100%", height: "100%", background: "#0d0d1a", borderRadius: 10 }}
-    />
+    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+      <div
+        ref={containerRef}
+        style={{ width: "100%", height: "100%", background: "#0d0d1a", borderRadius: 10 }}
+      />
+      {hoverBtn && (
+        <button
+          onMouseEnter={() => clearTimeout(hideTimerRef.current)}
+          onMouseLeave={() => { hideTimerRef.current = setTimeout(() => setHoverBtn(null), 300); }}
+          onClick={() => { onHideNodeRef.current(hoverBtn.id); setHoverBtn(null); }}
+          style={{
+            position: "absolute",
+            left: hoverBtn.x,
+            top: hoverBtn.y,
+            transform: "translate(-50%, -50%)",
+            width: 18, height: 18,
+            borderRadius: "50%",
+            background: "#e53935",
+            border: "none",
+            color: "#fff",
+            cursor: "pointer",
+            fontSize: 11,
+            fontWeight: "bold",
+            lineHeight: 1,
+            padding: 0,
+            zIndex: 100,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          ✕
+        </button>
+      )}
+    </div>
   );
 }

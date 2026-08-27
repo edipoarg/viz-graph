@@ -109,4 +109,15 @@ export const graphApi = {
     api
       .get<GraphData>(`/datasets/${id}/search`, { params })
       .then((r) => r.data),
+  expand: (id: string, nodeId: string, relTypes?: string[]) =>
+    api
+      .get<GraphData>(`/datasets/${id}/expand/${encodeURIComponent(nodeId)}`, {
+        params: relTypes?.length ? { rel_types: relTypes } : undefined,
+        paramsSerializer: { indexes: null },
+      })
+      .then((r) => r.data),
+  path: (id: string, fromId: string, toId: string) =>
+    api
+      .get<GraphData>(`/datasets/${id}/path`, { params: { from_id: fromId, to_id: toId } })
+      .then((r) => r.data),
 };

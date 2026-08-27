@@ -24,10 +24,6 @@ dev-backend:
 	[ -d .venv ] || python3 -m venv .venv && \
 	. .venv/bin/activate && \
 	pip install -q -r requirements.txt && \
-	NEO4J_URI=bolt://localhost:7687 \
-	NEO4J_USER=neo4j \
-	NEO4J_PASSWORD=$${NEO4J_PASSWORD} \
-	NEO4J_DATABASE=neo4j \
 	uvicorn app.main:app --reload --port 8001
 
 dev-frontend:

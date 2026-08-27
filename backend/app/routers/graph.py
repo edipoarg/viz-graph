@@ -151,90 +151,93 @@ async def search_and_expand(
         if not seed_records:
             return GraphOut(nodes=[], edges=[])
 
-        seed_nids = [r["nid"] for r in seed_records]
-        seed_nids_set = set(seed_nids)
-
-        # ── Paso 2a: aristas 1-hop ────────────────────────────────────────────
-        hop1_result = await session.run(
-            """
-            MATCH (seed:GraphNode {dataset_id: $dataset_id})
-            WHERE seed.node_id IN $seed_nids OR seed.name IN $seed_nids
-            WITH seed
-            MATCH (seed)-[e:EDGE]-(hop1)
-            WHERE hop1.dataset_id = $dataset_id
-            WITH DISTINCT e, startNode(e) AS src, endNode(e) AS tgt
-            RETURN
-                COALESCE(src.node_id, src.name) AS src_id,
-                src.name AS src_name,  src.tipo AS src_tipo,
-                COALESCE(src.cuit, '') AS src_cuit,
-                src.actividad_descripcion AS src_actividad,
-                COALESCE(tgt.node_id, tgt.name) AS tgt_id,
-                tgt.name AS tgt_name,  tgt.tipo AS tgt_tipo,
-                COALESCE(tgt.cuit, '') AS tgt_cuit,
-                tgt.actividad_descripcion AS tgt_actividad,
-                COALESCE(src.node_id, src.name) AS e_src,
-                COALESCE(tgt.node_id, tgt.name) AS e_tgt,
-                e.type AS rel_type, e.weight AS weight
-            LIMIT 500
-            """,
-            seed_nids=seed_nids, dataset_id=dataset_id,
-        )
-        hop1_records = await hop1_result.data()
-
-        # ── Paso 2b: aristas 2-hop (vecinos de los vecinos) ───────────────────
-        hop1_nids = list({
-            r["tgt_id"] if r["src_id"] in seed_nids_set else r["src_id"]
-            for r in hop1_records
-        } - seed_nids_set)[:30]
-
-        hop2_records: list[dict] = []
-        if hop1_nids:
-            hop2_result = await session.run(
-                """
-                MATCH (hop1:GraphNode {dataset_id: $dataset_id})
-                WHERE hop1.node_id IN $hop1_nids OR hop1.name IN $hop1_nids
-                WITH hop1
-                MATCH (hop1)-[e:EDGE]-(hop2)
-                WHERE hop2.dataset_id = $dataset_id
-                WITH DISTINCT e, startNode(e) AS src, endNode(e) AS tgt
-                RETURN
-                    COALESCE(src.node_id, src.name) AS src_id,
-                    src.name AS src_name,  src.tipo AS src_tipo,
-                    COALESCE(src.cuit, '') AS src_cuit,
-                    src.actividad_descripcion AS src_actividad,
-                    COALESCE(tgt.node_id, tgt.name) AS tgt_id,
-                    tgt.name AS tgt_name,  tgt.tipo AS tgt_tipo,
-                    COALESCE(tgt.cuit, '') AS tgt_cuit,
-                    tgt.actividad_descripcion AS tgt_actividad,
-                    COALESCE(src.node_id, src.name) AS e_src,
-                    COALESCE(tgt.node_id, tgt.name) AS e_tgt,
-                    e.type AS rel_type, e.weight AS weight
-                LIMIT 500
-                """,
-                hop1_nids=hop1_nids, dataset_id=dataset_id,
-            )
-            hop2_records = await hop2_result.data()
-
-        expand_records = hop1_records + hop2_records
-
-    # Construir respuesta incluyendo semillas sin aristas
-    nodes_map: dict[str, NodeOut] = {}
-    for r in seed_records:
-        nid = r["nid"]
-        nodes_map[nid] = NodeOut(
-            id=nid, name=r["name"], dataset_id=dataset_id, role="both",
+    nodes_map: dict[str, NodeOut] = {
+        r["nid"]: NodeOut(
+            id=r["nid"], name=r["name"], dataset_id=dataset_id, role="both",
             tipo=r.get("tipo"), cuit=r.get("cuit") or None,
             actividad_descripcion=r.get("actividad") or None,
         )
-
-    if expand_records:
-        graph = _build_graph(expand_records, dataset_id)
-        for n in graph.nodes:
-            if n.id not in nodes_map:
-                nodes_map[n.id] = n
-        return GraphOut(nodes=list(nodes_map.values()), edges=graph.edges)
-
+        for r in seed_records
+    }
     return GraphOut(nodes=list(nodes_map.values()), edges=[])
+
+
+@router.get("/{dataset_id}/expand/{node_id}", response_model=GraphOut)
+async def expand_node(
+    dataset_id: str,
+    node_id: str,
+    rel_types: list[str] | None = Query(default=None),
+    driver: AsyncDriver = Depends(get_driver),
+) -> GraphOut:
+    async with get_session(driver) as session:
+        edge_filter = ""
+        params: dict = {"node_id": node_id, "dataset_id": dataset_id}
+        if rel_types:
+            edge_filter = "AND e.type IN $rel_types "
+            params["rel_types"] = rel_types
+        result = await session.run(
+            f"""
+            MATCH (n:GraphNode {{node_id: $node_id, dataset_id: $dataset_id}})
+            WITH n
+            MATCH (n)-[e:EDGE]-(hop)
+            WHERE hop.dataset_id = $dataset_id {edge_filter}
+            WITH DISTINCT e, startNode(e) AS src, endNode(e) AS tgt
+            RETURN
+                COALESCE(src.node_id, src.name) AS src_id,
+                src.name AS src_name, src.tipo AS src_tipo,
+                COALESCE(src.cuit, '') AS src_cuit,
+                src.actividad_descripcion AS src_actividad,
+                COALESCE(tgt.node_id, tgt.name) AS tgt_id,
+                tgt.name AS tgt_name, tgt.tipo AS tgt_tipo,
+                COALESCE(tgt.cuit, '') AS tgt_cuit,
+                tgt.actividad_descripcion AS tgt_actividad,
+                COALESCE(startNode(e).node_id, startNode(e).name) AS e_src,
+                COALESCE(endNode(e).node_id,   endNode(e).name)   AS e_tgt,
+                e.type AS rel_type, e.weight AS weight
+            LIMIT 300
+            """,
+            **params,
+        )
+        records = await result.data()
+    return _build_graph(records, dataset_id)
+
+
+@router.get("/{dataset_id}/path", response_model=GraphOut)
+async def shortest_path(
+    dataset_id: str,
+    from_id: str = Query(...),
+    to_id: str = Query(...),
+    driver: AsyncDriver = Depends(get_driver),
+) -> GraphOut:
+    async with get_session(driver) as session:
+        result = await session.run(
+            """
+            MATCH (a:GraphNode {dataset_id: $dataset_id}),
+                  (b:GraphNode {dataset_id: $dataset_id})
+            WHERE a.node_id = $from_id AND b.node_id = $to_id
+            MATCH p = shortestPath((a)-[:EDGE*..15]-(b))
+            WITH nodes(p) AS ns, relationships(p) AS es
+            UNWIND range(0, size(es) - 1) AS i
+            WITH ns[i] AS src, ns[i+1] AS tgt, es[i] AS e
+            RETURN
+                COALESCE(src.node_id, src.name) AS src_id,
+                src.name AS src_name, src.tipo AS src_tipo,
+                COALESCE(src.cuit, '') AS src_cuit,
+                src.actividad_descripcion AS src_actividad,
+                COALESCE(tgt.node_id, tgt.name) AS tgt_id,
+                tgt.name AS tgt_name, tgt.tipo AS tgt_tipo,
+                COALESCE(tgt.cuit, '') AS tgt_cuit,
+                tgt.actividad_descripcion AS tgt_actividad,
+                COALESCE(startNode(e).node_id, startNode(e).name) AS e_src,
+                COALESCE(endNode(e).node_id,   endNode(e).name)   AS e_tgt,
+                e.type AS rel_type, e.weight AS weight
+            """,
+            dataset_id=dataset_id, from_id=from_id, to_id=to_id,
+        )
+        records = await result.data()
+    if not records:
+        return GraphOut(nodes=[], edges=[])
+    return _build_graph(records, dataset_id)
 
 
 @router.get("/{dataset_id}/graph/relation-types")
