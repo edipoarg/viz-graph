@@ -87,15 +87,51 @@ async def list_datasets(driver: AsyncDriver = Depends(get_driver)) -> list[Datas
         result = await session.run(
             """
             MATCH (d:Dataset)
-            OPTIONAL MATCH (n:GraphNode {dataset_id: d.id})
-            OPTIONAL MATCH ()-[e:EDGE {dataset_id: d.id}]->()
+            CALL {
+                WITH d
+                MATCH (n:GraphNode {dataset_id: d.id})
+                WHERE NOT coalesce(d.system, false)
+                RETURN count(n) AS nc
+            }
+            CALL {
+                WITH d
+                MATCH ()-[e:EDGE {dataset_id: d.id}]->()
+                WHERE NOT coalesce(d.system, false)
+                RETURN count(e) AS ec
+            }
             RETURN d.id AS id, d.name AS name, d.created_at AS created_at,
-                   count(DISTINCT n) AS node_count, count(DISTINCT e) AS edge_count
+                   coalesce(d.system, false) AS system,
+                   CASE WHEN coalesce(d.system, false)
+                        THEN coalesce(d.node_count, 0) ELSE nc END AS node_count,
+                   CASE WHEN coalesce(d.system, false)
+                        THEN coalesce(d.edge_count, 0) ELSE ec END AS edge_count
             ORDER BY d.created_at DESC
             """
         )
         records = await result.data()
     return [DatasetOut(**r) for r in records]
+
+
+@router.get("/{dataset_id}", response_model=DatasetOut)
+async def get_dataset(
+    dataset_id: str,
+    driver: AsyncDriver = Depends(get_driver),
+) -> DatasetOut:
+    async with get_session(driver) as session:
+        result = await session.run(
+            """
+            MATCH (d:Dataset {id: $id})
+            RETURN d.id AS id, d.name AS name, d.created_at AS created_at,
+                   coalesce(d.system, false) AS system,
+                   coalesce(d.node_count, 0) AS node_count,
+                   coalesce(d.edge_count, 0) AS edge_count
+            """,
+            id=dataset_id,
+        )
+        record = await result.single()
+        if not record:
+            raise HTTPException(404, "Dataset not found")
+    return DatasetOut(**dict(record))
 
 
 @router.post("", response_model=DatasetOut, status_code=201)
@@ -122,15 +158,16 @@ async def delete_dataset(
 ) -> None:
     async with get_session(driver) as session:
         result = await session.run(
-            "MATCH (d:Dataset {id: $id}) RETURN d",
+            "MATCH (d:Dataset {id: $id}) RETURN d.system AS system",
             id=dataset_id,
         )
-        if not await result.single():
+        record = await result.single()
+        if not record:
             raise HTTPException(404, "Dataset not found")
+        if record["system"]:
+            raise HTTPException(403, "No se puede eliminar un dataset del sistema")
         await session.run(
-            """
-            MATCH (d:Dataset {id: $id}) DETACH DELETE d
-            """,
+            "MATCH (d:Dataset {id: $id}) DETACH DELETE d",
             id=dataset_id,
         )
         await session.run(

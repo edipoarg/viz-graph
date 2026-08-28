@@ -21,6 +21,7 @@ import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
 import BubbleChartIcon from "@mui/icons-material/BubbleChart";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
+import StorageIcon from "@mui/icons-material/Storage";
 import { useNavigate } from "react-router-dom";
 import { datasetsApi } from "../api/client";
 import type { Dataset } from "../types";
@@ -110,9 +111,20 @@ export default function DatasetListPage() {
           {datasets.map((ds) => (
             <Card key={ds.id} variant="outlined">
               <CardContent sx={{ pb: 1 }}>
-                <Typography variant="h6" fontWeight={600}>
-                  {ds.name}
-                </Typography>
+                <Box display="flex" alignItems="center" gap={1} flexWrap="wrap">
+                  <Typography variant="h6" fontWeight={600}>
+                    {ds.system ? "IGJ" : ds.name}
+                  </Typography>
+                  {ds.system && (
+                    <Chip
+                      icon={<StorageIcon />}
+                      label="Sistema"
+                      size="small"
+                      color="primary"
+                      variant="filled"
+                    />
+                  )}
+                </Box>
                 <Typography variant="caption" color="text.secondary">
                   {new Date(ds.created_at).toLocaleString()}
                 </Typography>
@@ -131,27 +143,31 @@ export default function DatasetListPage() {
                   >
                     Visualizar
                   </Button>
-                  <Button
-                    size="small"
-                    startIcon={<UploadFileIcon />}
-                    onClick={() =>
-                      navigate(
-                        `/upload?dataset_id=${ds.id}&dataset_name=${encodeURIComponent(ds.name)}`
-                      )
-                    }
-                  >
-                    Importar más
-                  </Button>
+                  {!ds.system && (
+                    <Button
+                      size="small"
+                      startIcon={<UploadFileIcon />}
+                      onClick={() =>
+                        navigate(
+                          `/upload?dataset_id=${ds.id}&dataset_name=${encodeURIComponent(ds.name)}`
+                        )
+                      }
+                    >
+                      Importar más
+                    </Button>
+                  )}
                 </Box>
-                <Tooltip title="Eliminar dataset">
-                  <IconButton
-                    size="small"
-                    color="error"
-                    onClick={() => setDeleteTarget(ds)}
-                  >
-                    <DeleteIcon />
-                  </IconButton>
-                </Tooltip>
+                {!ds.system && (
+                  <Tooltip title="Eliminar dataset">
+                    <IconButton
+                      size="small"
+                      color="error"
+                      onClick={() => setDeleteTarget(ds)}
+                    >
+                      <DeleteIcon />
+                    </IconButton>
+                  </Tooltip>
+                )}
               </CardActions>
             </Card>
           ))}

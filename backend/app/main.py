@@ -3,6 +3,7 @@ import logging
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from neo4j.exceptions import ServiceUnavailable
 
 from .auth import require_auth
 from .config import settings
@@ -21,6 +22,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(ServiceUnavailable)
+async def neo4j_unavailable_handler(request: Request, exc: ServiceUnavailable) -> JSONResponse:
+    logger.warning("Neo4j unavailable on %s %s: %s", request.method, request.url, exc)
+    return JSONResponse(status_code=503, content={"detail": "Base de datos no disponible"})
 
 
 @app.exception_handler(Exception)

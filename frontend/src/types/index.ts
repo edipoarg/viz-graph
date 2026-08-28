@@ -4,6 +4,7 @@ export interface Dataset {
   created_at: string;
   node_count: number;
   edge_count: number;
+  system: boolean;
 }
 
 export interface CsvPreview {
@@ -25,6 +26,9 @@ export interface GraphNode {
   name: string;
   dataset_id: string;
   role: "source" | "target" | "both";
+  tipo?: string;
+  cuit?: string;
+  actividad_descripcion?: string;
 }
 
 export interface GraphEdge {
