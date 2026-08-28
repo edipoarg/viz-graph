@@ -113,7 +113,7 @@ export default function DatasetListPage() {
               <CardContent sx={{ pb: 1 }}>
                 <Box display="flex" alignItems="center" gap={1} flexWrap="wrap">
                   <Typography variant="h6" fontWeight={600}>
-                    {ds.name}
+                    {ds.system ? "IGJ" : ds.name}
                   </Typography>
                   {ds.system && (
                     <Chip

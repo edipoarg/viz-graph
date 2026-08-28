@@ -15,9 +15,13 @@ logs:
 
 dev:
 	@trap 'kill 0' INT; \
+	$(MAKE) dev-neo4j & \
 	$(MAKE) dev-backend & \
 	$(MAKE) dev-frontend & \
 	wait
+
+dev-neo4j:
+	docker compose up neo4j
 
 dev-backend:
 	cd backend && \

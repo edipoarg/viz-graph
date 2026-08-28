@@ -23,10 +23,12 @@ import CloseIcon from "@mui/icons-material/Close";
 import AccountTreeIcon from "@mui/icons-material/AccountTree";
 import AltRouteIcon from "@mui/icons-material/AltRoute";
 import UndoIcon from "@mui/icons-material/Undo";
+import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
+import DownloadIcon from "@mui/icons-material/Download";
 import { useNavigate, useParams } from "react-router-dom";
 import { datasetsApi, graphApi } from "../api/client";
 import type { GraphData, GraphNode } from "../types";
-import GraphView from "../components/GraphView";
+import GraphView, { type GraphViewHandle } from "../components/GraphView";
 
 const DRAWER_WIDTH = 300;
 type SearchField = "name" | "cuit" | "actividad";
@@ -46,9 +48,15 @@ export default function GraphPage() {
 
   const [isSystem, setIsSystem] = useState<boolean | null>(null);
   const [graphData, setGraphData] = useState<GraphData | null>(null);
-  const [relTypes, setRelTypes] = useState<string[]>([]);
+  // Each system search becomes a chip; non-system uses a single unnamed entry
+  const [searches, setSearches] = useState<Array<{ label: string; nodeIds: string[] }>>([]);
+  const seedNodeIds = useMemo(
+    () => new Set(searches.flatMap((s) => s.nodeIds)),
+    [searches]
+  );
+  const [relTypes, setRelTypes] = useState<string[]>([]);;
   const [activeRelTypes, setActiveRelTypes] = useState<string[]>([]);
-  const [activeEdgeTypes, setActiveEdgeTypes] = useState<string[]>([]);
+  const [deselectedEdgeTypes, setDeselectedEdgeTypes] = useState<string[]>([]);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [searchField, setSearchField] = useState<SearchField>("name");
@@ -58,6 +66,8 @@ export default function GraphPage() {
 
   // Undo history
   const [history, setHistory] = useState<GraphData[]>([]);
+
+  const graphViewRef = useRef<GraphViewHandle>(null);
 
   // Expand state
   const [expanding, setExpanding] = useState(false);
@@ -70,19 +80,23 @@ export default function GraphPage() {
 
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  // Derive available edge types from current graph and reset filter when they change
+  // Derive available edge types from current graph
   const availableEdgeTypes = useMemo(
     () => [...new Set((graphData?.edges ?? []).map((e) => e.type))].sort(),
     [graphData]
   );
-  useEffect(() => { setActiveEdgeTypes(availableEdgeTypes); }, [availableEdgeTypes.join("|")]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // filteredData drives the stats counter (node/edge counts visible to user)
+  // filteredData: seed nodes always shown; neighbor nodes only shown if connected by a visible edge
   const filteredData = useMemo((): GraphData | null => {
     if (!graphData) return null;
-    if (activeEdgeTypes.length === availableEdgeTypes.length) return graphData;
-    return { nodes: graphData.nodes, edges: graphData.edges.filter((e) => activeEdgeTypes.includes(e.type)) };
-  }, [graphData, activeEdgeTypes, availableEdgeTypes.length]);
+    if (deselectedEdgeTypes.length === 0) return graphData;
+    const visibleEdges = graphData.edges.filter((e) => !deselectedEdgeTypes.includes(e.type));
+    const connectedIds = new Set(visibleEdges.flatMap((e) => [e.source, e.target]));
+    return {
+      nodes: graphData.nodes.filter((n) => seedNodeIds.has(n.id) || connectedIds.has(n.id)),
+      edges: visibleEdges,
+    };
+  }, [graphData, deselectedEdgeTypes, seedNodeIds]);
 
   useEffect(() => {
     if (!id) return;
@@ -113,7 +127,22 @@ export default function GraphPage() {
       setError(null);
       graphApi
         .search(id, { q: debouncedSearch.trim(), field: searchField })
-        .then(setGraphData)
+        .then((data) => {
+          if (data.nodes.length === 0) return;
+          const label = debouncedSearch.trim();
+          const nodeIds = data.nodes.map((n) => n.id);
+          // Add or update the chip for this search term
+          setSearches((prev) => {
+            const existing = prev.findIndex((s) => s.label === label);
+            if (existing >= 0) {
+              const next = [...prev];
+              next[existing] = { label, nodeIds };
+              return next;
+            }
+            return [...prev, { label, nodeIds }];
+          });
+          setGraphData((prev) => prev ? mergeGraphData(prev, data) : data);
+        })
         .catch(() => setError("Error al buscar en el grafo"))
         .finally(() => setLoading(false));
     } else {
@@ -124,7 +153,10 @@ export default function GraphPage() {
           rel_types: activeRelTypes.length < relTypes.length ? activeRelTypes : undefined,
           search: debouncedSearch || undefined,
         })
-        .then(setGraphData)
+        .then((data) => {
+          setGraphData(data);
+          setSearches([{ label: "", nodeIds: data.nodes.map((n) => n.id) }]);
+        })
         .catch(() => setError("Error al cargar el grafo"))
         .finally(() => setLoading(false));
     }
@@ -141,6 +173,43 @@ export default function GraphPage() {
     debounceRef.current = setTimeout(() => setDebouncedSearch(v), 400);
   };
 
+  const handleClearView = () => {
+    setGraphData({ nodes: [], edges: [] });
+    setSearches([]);
+    setHistory([]);
+    setSelectedNode(null);
+    setDeselectedEdgeTypes([]);
+    setSearch("");
+    setDebouncedSearch("");
+  };
+
+  const handleRemoveSearch = (idx: number) => {
+    const removed = searches[idx];
+    const remaining = searches.filter((_, i) => i !== idx);
+    const remainingSeedIds = new Set(remaining.flatMap((s) => s.nodeIds));
+    const toRemove = new Set(removed.nodeIds.filter((id) => !remainingSeedIds.has(id)));
+    setSearches(remaining);
+    setGraphData((prev) => {
+      if (!prev) return prev;
+      let nodes = prev.nodes.filter((n) => !toRemove.has(n.id));
+      let edges = prev.edges.filter((e) => !toRemove.has(e.source) && !toRemove.has(e.target));
+      // Cascade: remove neighbors that are no longer connected to any remaining seed
+      let changed = true;
+      while (changed) {
+        changed = false;
+        const connectedIds = new Set(edges.flatMap((e) => [e.source, e.target]));
+        const pruned = nodes.filter((n) => remainingSeedIds.has(n.id) || connectedIds.has(n.id));
+        if (pruned.length < nodes.length) {
+          changed = true;
+          const prunedIds = new Set(pruned.map((n) => n.id));
+          edges = edges.filter((e) => prunedIds.has(e.source) && prunedIds.has(e.target));
+          nodes = pruned;
+        }
+      }
+      return { nodes, edges };
+    });
+  };
+
   const toggleRelType = (t: string) => {
     setActiveRelTypes((prev) =>
       prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]
@@ -151,10 +220,8 @@ export default function GraphPage() {
     if (!id || !selectedNode || !graphData) return;
     setHistory((h) => [...h, graphData]);
     setExpanding(true);
-    const relFilter =
-      activeEdgeTypes.length > 0 && activeEdgeTypes.length < availableEdgeTypes.length
-        ? activeEdgeTypes
-        : undefined;
+    const activeEdgeTypes = availableEdgeTypes.filter((t) => !deselectedEdgeTypes.includes(t));
+    const relFilter = deselectedEdgeTypes.length > 0 ? activeEdgeTypes : undefined;
     graphApi
       .expand(id, selectedNode.id, relFilter)
       .then((incoming) => {
@@ -220,9 +287,21 @@ export default function GraphPage() {
         <Button startIcon={<ArrowBackIcon />} onClick={() => navigate("/")} size="small">
           Datasets
         </Button>
-        {history.length > 0 && (
-          <Button size="small" startIcon={<UndoIcon fontSize="small" />} onClick={handleUndo}>
-            Deshacer ({history.length})
+        <Box display="flex" gap={1}>
+          {history.length > 0 && (
+            <Button size="small" startIcon={<UndoIcon fontSize="small" />} onClick={handleUndo} sx={{ flex: 1 }}>
+              Deshacer ({history.length})
+            </Button>
+          )}
+          {graphData && graphData.nodes.length > 0 && (
+            <Button size="small" color="error" startIcon={<DeleteSweepIcon fontSize="small" />} onClick={handleClearView} sx={{ flex: 1 }}>
+              Limpiar
+            </Button>
+          )}
+        </Box>
+        {graphData && graphData.nodes.length > 0 && (
+          <Button size="small" startIcon={<DownloadIcon fontSize="small" />} onClick={() => graphViewRef.current?.exportPng()}>
+            Exportar imagen
           </Button>
         )}
         <Divider />
@@ -274,6 +353,22 @@ export default function GraphPage() {
           }}
         />
 
+        {/* Chips de búsquedas activas (solo sistema) */}
+        {isSystem && searches.length > 0 && (
+          <Box display="flex" flexWrap="wrap" gap={0.5}>
+            {searches.map((s, i) => (
+              <Chip
+                key={s.label + i}
+                label={s.label}
+                size="small"
+                onDelete={() => handleRemoveSearch(i)}
+                color="primary"
+                variant="outlined"
+              />
+            ))}
+          </Box>
+        )}
+
         {/* Filtros de tipo de relación (todos los datasets) */}
         {availableEdgeTypes.length > 0 && (
           <Box>
@@ -287,15 +382,15 @@ export default function GraphPage() {
                   label={t}
                   size="small"
                   onClick={() =>
-                    setActiveEdgeTypes((prev) =>
+                    setDeselectedEdgeTypes((prev) =>
                       prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]
                     )
                   }
-                  variant={activeEdgeTypes.includes(t) ? "filled" : "outlined"}
+                  variant={deselectedEdgeTypes.includes(t) ? "outlined" : "filled"}
                   sx={{
-                    bgcolor: activeEdgeTypes.includes(t) ? relColors[i % relColors.length] : undefined,
+                    bgcolor: !deselectedEdgeTypes.includes(t) ? relColors[i % relColors.length] : undefined,
                     borderColor: relColors[i % relColors.length],
-                    color: activeEdgeTypes.includes(t) ? "#fff" : relColors[i % relColors.length],
+                    color: !deselectedEdgeTypes.includes(t) ? "#fff" : relColors[i % relColors.length],
                   }}
                 />
               ))}
@@ -332,7 +427,7 @@ export default function GraphPage() {
 
         {graphData && graphData.nodes.length > 0 && (
           <Typography variant="caption" color="text.secondary">
-            {graphData.nodes.length} nodos · {(filteredData?.edges ?? graphData.edges).length} aristas visibles
+            {(filteredData ?? graphData).nodes.length} nodos · {(filteredData ?? graphData).edges.length} aristas visibles
           </Typography>
         )}
 
@@ -452,13 +547,13 @@ export default function GraphPage() {
             <Typography color="text.secondary">Ningún nodo coincide con la búsqueda.</Typography>
           </Box>
         )}
-        {graphData && !loading && graphData.nodes.length > 0 && (
+        {filteredData && !loading && filteredData.nodes.length > 0 && (
           <GraphView
-            data={graphData}
+            ref={graphViewRef}
+            data={filteredData}
             onNodeSelect={setSelectedNode}
             selectedNodeId={selectedNode?.id ?? null}
             onHideNode={handleHideNode}
-            activeEdgeTypes={activeEdgeTypes}
           />
         )}
       </Box>

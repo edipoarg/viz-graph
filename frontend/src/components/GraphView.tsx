@@ -1,13 +1,16 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, forwardRef, useImperativeHandle } from "react";
 import cytoscape, { type Core, type NodeSingular } from "cytoscape";
 import type { GraphData, GraphEdge, GraphNode } from "../types";
+
+export interface GraphViewHandle {
+  exportPng: () => void;
+}
 
 interface Props {
   data: GraphData;
   onNodeSelect: (node: GraphNode | null) => void;
   selectedNodeId: string | null;
   onHideNode: (nodeId: string) => void;
-  activeEdgeTypes: string[];
 }
 
 const RELATION_COLORS: Record<string, string> = {};
@@ -98,9 +101,10 @@ const STYLES: cytoscape.StylesheetStyle[] = [
   { selector: "edge:selected", style: { "width": 4, opacity: 1 } },
 ];
 
-export default function GraphView({
-  data, onNodeSelect, selectedNodeId, onHideNode, activeEdgeTypes,
-}: Props) {
+const GraphView = forwardRef<GraphViewHandle, Props>(function GraphView(
+  { data, onNodeSelect, selectedNodeId, onHideNode },
+  ref
+) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
   const positionsRef = useRef<Record<string, { x: number; y: number }>>({});
@@ -253,18 +257,18 @@ export default function GraphView({
     };
   }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Edge visibility filter ────────────────────────────────────────────────
-  useEffect(() => {
-    const cy = cyRef.current;
-    if (!cy) return;
-    if (activeEdgeTypes.length === 0) {
-      cy.edges().style("display", "element");
-      return;
-    }
-    cy.edges().forEach((e) => {
-      e.style("display", activeEdgeTypes.includes(e.data("type")) ? "element" : "none");
-    });
-  }, [activeEdgeTypes]);
+  // ── Export full graph ───────────────────────────────────────────────
+  useImperativeHandle(ref, () => ({
+    exportPng() {
+      const cy = cyRef.current;
+      if (!cy) return;
+      const dataUrl = cy.png({ full: true, scale: 2 });
+      const a = document.createElement("a");
+      a.href = dataUrl;
+      a.download = "red.png";
+      a.click();
+    },
+  }));
 
   // ── Highlight selected node ───────────────────────────────────────────────
   useEffect(() => {
@@ -311,4 +315,6 @@ export default function GraphView({
       )}
     </div>
   );
-}
+});
+
+export default GraphView;
