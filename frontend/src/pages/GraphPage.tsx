@@ -381,7 +381,7 @@ export default function GraphPage() {
               <FilterListIcon fontSize="inherit" /> Tipo de relación
             </Typography>
             <Box display="flex" flexWrap="wrap" gap={0.5}>
-              {availableEdgeTypes.map((t, i) => (
+              {availableEdgeTypes.map((t) => (
                 <Chip
                   key={t}
                   label={t}
