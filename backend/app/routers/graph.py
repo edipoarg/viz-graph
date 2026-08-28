@@ -1,8 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from neo4j import AsyncDriver
+import logging
 
 from ..db import get_driver, get_session
 from ..schemas import GraphOut, NodeOut, EdgeOut
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -122,32 +125,51 @@ async def search_and_expand(
                        n.name AS name, n.tipo AS tipo,
                        COALESCE(n.cuit, '') AS cuit,
                        n.actividad_descripcion AS actividad
-                LIMIT 20
+                LIMIT 500
                 """,
                 q=q, dataset_id=dataset_id,
             )
-        else:
-            # Fulltext sobre name + cuit + actividad_descripcion
-            ft_q = q.strip()
-            # Agrega wildcard al último token para búsqueda por prefijo
-            words = ft_q.split()
-            if words:
-                words[-1] = words[-1] + "*"
-            ft_q = " ".join(words)
+        elif field == "name":
+            words = q.strip().split()
+            # Use the longest word as the fulltext pre-filter (most distinctive token)
+            key_word = max(words, key=len) if words else q.strip()
+            # Wildcards bypass the Lucene analyzer, so the term must be pre-lowercased
+            ft_q = f"{key_word.lower()}*"
             seed_result = await session.run(
                 """
-                CALL db.index.fulltext.queryNodes('idx_node_search', $q) YIELD node, score
+                CALL db.index.fulltext.queryNodes('idx_node_search', $ft_q, {limit: 2000}) YIELD node, score
+                WHERE node.dataset_id = $dataset_id
+                  AND toLower(node.name) CONTAINS toLower($raw_q)
+                RETURN COALESCE(node.node_id, node.name) AS nid,
+                       node.name AS name, node.tipo AS tipo,
+                       COALESCE(node.cuit, '') AS cuit,
+                       node.actividad_descripcion AS actividad
+                LIMIT 500
+                """,
+                ft_q=ft_q, raw_q=q.strip(), dataset_id=dataset_id,
+            )
+        else:
+            # Fulltext para actividad (búsqueda semántica con todos los términos requeridos)
+            ft_q = q.strip()
+            words = ft_q.split()
+            if words:
+                parts = [f"{w.lower()}" for w in words[:-1]] + [f"{words[-1].lower()}*"]
+                ft_q = " ".join(parts)
+            seed_result = await session.run(
+                """
+                CALL db.index.fulltext.queryNodes('idx_node_search', $q, {limit: 500}) YIELD node, score
                 WHERE node.dataset_id = $dataset_id
                 RETURN COALESCE(node.node_id, node.name) AS nid,
                        node.name AS name, node.tipo AS tipo,
                        COALESCE(node.cuit, '') AS cuit,
                        node.actividad_descripcion AS actividad
-                LIMIT 20
+                LIMIT 500
                 """,
                 q=ft_q, dataset_id=dataset_id,
             )
 
         seed_records = await seed_result.data()
+        logger.info("Search '%s' (field=%s) returned %d seed nodes", q, field, len(seed_records))
         if not seed_records:
             return GraphOut(nodes=[], edges=[])
 
@@ -194,7 +216,7 @@ async def expand_node(
                 COALESCE(startNode(e).node_id, startNode(e).name) AS e_src,
                 COALESCE(endNode(e).node_id,   endNode(e).name)   AS e_tgt,
                 e.type AS rel_type, e.weight AS weight
-            LIMIT 300
+            LIMIT 2000
             """,
             **params,
         )

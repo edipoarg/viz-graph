@@ -11,22 +11,9 @@ interface Props {
   onNodeSelect: (node: GraphNode | null) => void;
   selectedNodeId: string | null;
   onHideNode: (nodeId: string) => void;
+  relColorMap: Record<string, string>;
 }
 
-const RELATION_COLORS: Record<string, string> = {};
-const PALETTE = [
-  "#7c4dff", "#03dac6", "#ff6d00", "#e91e63", "#00bcd4",
-  "#8bc34a", "#ff5722", "#9c27b0", "#ffc107", "#2196f3",
-];
-let colorIdx = 0;
-
-function relColor(type: string): string {
-  if (!RELATION_COLORS[type]) {
-    RELATION_COLORS[type] = PALETTE[colorIdx % PALETTE.length];
-    colorIdx++;
-  }
-  return RELATION_COLORS[type];
-}
 
 function calcDegree(edges: GraphEdge[]): Record<string, number> {
   const deg: Record<string, number> = {};
@@ -102,7 +89,7 @@ const STYLES: cytoscape.StylesheetStyle[] = [
 ];
 
 const GraphView = forwardRef<GraphViewHandle, Props>(function GraphView(
-  { data, onNodeSelect, selectedNodeId, onHideNode },
+  { data, onNodeSelect, selectedNodeId, onHideNode, relColorMap },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -170,7 +157,7 @@ const GraphView = forwardRef<GraphViewHandle, Props>(function GraphView(
         ...data.edges.map((e) => ({
           data: {
             id: e.id, source: e.source, target: e.target,
-            type: e.type, weight: e.weight, color: relColor(e.type),
+            type: e.type, weight: e.weight, color: relColorMap[e.type] ?? "#aaaaaa",
           },
         })),
       ],
@@ -212,7 +199,7 @@ const GraphView = forwardRef<GraphViewHandle, Props>(function GraphView(
       const dy = cur.y - dragStartPos.y;
       node.neighborhood("node").forEach((nb: NodeSingular) => {
         const sp = neighborStartPos.get(nb.id());
-        if (sp && !nb.grabbed()) nb.position({ x: sp.x + dx * 0.5, y: sp.y + dy * 0.5 });
+        if (sp && !nb.grabbed()) nb.position({ x: sp.x + dx * 0.85, y: sp.y + dy * 0.85 });
       });
     });
     cy.on("free", "node", () => {

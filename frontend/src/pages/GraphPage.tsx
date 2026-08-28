@@ -30,6 +30,11 @@ import { datasetsApi, graphApi } from "../api/client";
 import type { GraphData, GraphNode } from "../types";
 import GraphView, { type GraphViewHandle } from "../components/GraphView";
 
+const PALETTE = [
+  "#7c4dff", "#03dac6", "#ff6d00", "#e91e63", "#00bcd4",
+  "#8bc34a", "#ff5722", "#9c27b0", "#ffc107", "#2196f3",
+];
+
 const DRAWER_WIDTH = 300;
 type SearchField = "name" | "cuit" | "actividad";
 
@@ -84,6 +89,11 @@ export default function GraphPage() {
   const availableEdgeTypes = useMemo(
     () => [...new Set((graphData?.edges ?? []).map((e) => e.type))].sort(),
     [graphData]
+  );
+
+  const relColorMap = useMemo(
+    () => Object.fromEntries(availableEdgeTypes.map((t, i) => [t, PALETTE[i % PALETTE.length]])),
+    [availableEdgeTypes]
   );
 
   // filteredData: seed nodes always shown; neighbor nodes only shown if connected by a visible edge
@@ -269,11 +279,6 @@ export default function GraphPage() {
       .finally(() => setPathLoading(false));
   };
 
-  const relColors = [
-    "#7c4dff", "#03dac6", "#ff6d00", "#e91e63", "#00bcd4",
-    "#8bc34a", "#ff5722", "#9c27b0", "#ffc107", "#2196f3",
-  ];
-
   const isEmpty = graphData?.nodes.length === 0;
   const showSearchPrompt = isSystem && isEmpty && !debouncedSearch && !loading;
   return (
@@ -388,9 +393,9 @@ export default function GraphPage() {
                   }
                   variant={deselectedEdgeTypes.includes(t) ? "outlined" : "filled"}
                   sx={{
-                    bgcolor: !deselectedEdgeTypes.includes(t) ? relColors[i % relColors.length] : undefined,
-                    borderColor: relColors[i % relColors.length],
-                    color: !deselectedEdgeTypes.includes(t) ? "#fff" : relColors[i % relColors.length],
+                    bgcolor: !deselectedEdgeTypes.includes(t) ? relColorMap[t] : undefined,
+                    borderColor: relColorMap[t],
+                    color: !deselectedEdgeTypes.includes(t) ? "#fff" : relColorMap[t],
                   }}
                 />
               ))}
@@ -413,9 +418,9 @@ export default function GraphPage() {
                   onClick={() => toggleRelType(t)}
                   variant={activeRelTypes.includes(t) ? "filled" : "outlined"}
                   sx={{
-                    bgcolor: activeRelTypes.includes(t) ? relColors[i % relColors.length] : undefined,
-                    borderColor: relColors[i % relColors.length],
-                    color: activeRelTypes.includes(t) ? "#fff" : relColors[i % relColors.length],
+                    bgcolor: activeRelTypes.includes(t) ? PALETTE[i % PALETTE.length] : undefined,
+                    borderColor: PALETTE[i % PALETTE.length],
+                    color: activeRelTypes.includes(t) ? "#fff" : PALETTE[i % PALETTE.length],
                   }}
                 />
               ))}
@@ -554,6 +559,7 @@ export default function GraphPage() {
             onNodeSelect={setSelectedNode}
             selectedNodeId={selectedNode?.id ?? null}
             onHideNode={handleHideNode}
+            relColorMap={relColorMap}
           />
         )}
       </Box>
