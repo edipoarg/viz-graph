@@ -32,6 +32,7 @@ services:
         condition: service_healthy
     volumes:
       - ./backend:/app
+      - ../poder_economico/datos_analisis/poder_economico.duckdb:/data/poder_economico.duckdb:ro
     restart: unless-stopped
 
   frontend:
