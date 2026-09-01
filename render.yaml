@@ -6,6 +6,9 @@ services:
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
     plan: free
+    buildArgs:
+      - key: DUCKDB_URL
+        sync: false          # set to GitHub Release download URL
     envVars:
       - key: NEO4J_URI
         sync: false          # set manually in Render dashboard
@@ -15,6 +18,8 @@ services:
         sync: false
       - key: CORS_ORIGINS
         value: "https://edipo-viz-frontend.onrender.com"
+      - key: DUCKDB_PATH
+        value: /data/poder_economico.duckdb
 
   # ── Frontend ─────────────────────────────────────────────────────────────
   - type: web

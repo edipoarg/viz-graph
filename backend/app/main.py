@@ -8,7 +8,7 @@ from neo4j.exceptions import ServiceUnavailable
 from .auth import require_auth
 from .config import settings
 from .db import get_driver, lifespan
-from .routers import datasets, graph
+from .routers import datasets, graph, igj
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,12 @@ app.include_router(
     graph.router,
     prefix="/api/datasets",
     tags=["graph"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    igj.router,
+    prefix="/api/igj",
+    tags=["igj"],
     dependencies=[Depends(require_auth)],
 )
 

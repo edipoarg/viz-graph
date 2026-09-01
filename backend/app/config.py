@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     cors_origins: str = '["http://localhost:5173","http://localhost:3000"]'
     app_username: str = ""
     app_password: str = ""
+    duckdb_path: str = "/data/poder_economico.duckdb"
 
     @property
     def cors_origins_list(self) -> list[str]:
