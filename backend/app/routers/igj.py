@@ -8,7 +8,7 @@ from ..schemas import EdgeOut, GraphOut, NodeOut
 
 router = APIRouter()
 
-MAX_NODES = 400
+MAX_NODES = 200
 
 
 def _open_con() -> duckdb.DuckDBPyConnection:
@@ -112,32 +112,81 @@ def _bfs(con: duckdb.DuckDBPyConnection, seed_correlativos: list[str], depth: in
     return GraphOut(nodes=list(nodes.values()), edges=list(edges.values()))
 
 
+@router.get("/search")
+def search_entities(q: str = Query(min_length=2), tipo: str = Query(default="entidad")) -> list[dict]:
+    con = _open_con()
+    try:
+        if tipo == "persona":
+            rows = con.execute(
+                "SELECT tipo_documento, numero_documento, apellido_nombre, "
+                "COUNT(DISTINCT numero_correlativo) as n "
+                "FROM igj_autoridades "
+                "WHERE apellido_nombre ILIKE ? "
+                "  AND numero_documento IS NOT NULL AND TRIM(numero_documento) != '' "
+                "GROUP BY tipo_documento, numero_documento, apellido_nombre "
+                "ORDER BY CASE WHEN UPPER(TRIM(apellido_nombre)) LIKE UPPER(?) THEN 0 ELSE 1 END, "
+                "n DESC LIMIT 20",
+                [f"%{q.strip()}%", f"{q.strip()}%"],
+            ).fetchall()
+            return [{"tipo_documento": r[0], "numero_documento": r[1], "name": r[2], "n_entidades": r[3]} for r in rows]
+        else:
+            rows = con.execute(
+                "SELECT numero_correlativo, razon_social, cuit, descripcion_tipo_societario "
+                "FROM igj_entidades "
+                "WHERE razon_social ILIKE ? "
+                "ORDER BY CASE WHEN UPPER(TRIM(razon_social)) LIKE UPPER(?) THEN 0 ELSE 1 END, "
+                "LENGTH(razon_social) "
+                "LIMIT 20",
+                [f"%{q.strip()}%", f"{q.strip()}%"],
+            ).fetchall()
+            return [{"correlativo": r[0], "name": r[1] or "", "cuit": r[2], "tipo": r[3] or ""} for r in rows]
+    finally:
+        con.close()
+
+
 @router.get("/expand", response_model=GraphOut)
 def expand_graph(
-    cuit: str | None = Query(default=None, description="CUIT de 11 dígitos"),
-    razon_social: str | None = Query(default=None, description="Nombre o fragmento de razón social"),
-    dni: str | None = Query(default=None, description="DNI del socio/autoridad (6-8 dígitos)"),
-    depth: int = Query(default=2, ge=1, le=4, description="Profundidad del BFS (1-4)"),
+    correlativo: list[str] = Query(default=[]),
+    persona: list[str] = Query(default=[]),  # "tipo_doc:num_doc" pairs
+    cuit: str | None = Query(default=None),
+    razon_social: str | None = Query(default=None),
+    dni: str | None = Query(default=None),
+    depth: int = Query(default=2, ge=1, le=4),
 ) -> GraphOut:
-    if not any([cuit, razon_social, dni]):
-        raise HTTPException(400, "Debe proveer al menos uno: cuit, razon_social o dni")
+    if not any([correlativo, persona, cuit, razon_social, dni]):
+        raise HTTPException(400, "Debe proveer al menos uno: correlativo, persona, cuit, razon_social o dni")
 
     con = _open_con()
     try:
-        if cuit:
+        if correlativo:
+            seed_correlativos = correlativo
+        elif persona:
+            rows = con.execute(
+                "SELECT DISTINCT numero_correlativo FROM igj_autoridades "
+                "WHERE CONCAT(tipo_documento, ':', numero_documento) = ANY(?)",
+                [persona],
+            ).fetchall()
+            seed_correlativos = [r[0] for r in rows]
+        elif cuit:
             if not re.match(r"^\d{11}$", cuit):
                 raise HTTPException(422, "CUIT debe tener exactamente 11 dígitos")
             rows = con.execute(
                 "SELECT numero_correlativo FROM igj_entidades WHERE cuit = ?", [cuit]
             ).fetchall()
+            seed_correlativos = [r[0] for r in rows]
         elif razon_social:
             term = razon_social.strip()
             if len(term) < 3:
                 raise HTTPException(422, "razon_social debe tener al menos 3 caracteres")
             rows = con.execute(
-                "SELECT numero_correlativo FROM igj_entidades WHERE razon_social ILIKE ? LIMIT 10",
-                [f"%{term}%"],
+                "SELECT numero_correlativo FROM igj_entidades "
+                "WHERE razon_social ILIKE ? "
+                "ORDER BY CASE WHEN UPPER(TRIM(razon_social)) LIKE UPPER(?) THEN 0 ELSE 1 END, "
+                "LENGTH(razon_social) "
+                "LIMIT 20",
+                [f"%{term}%", f"{term}%"],
             ).fetchall()
+            seed_correlativos = [r[0] for r in rows]
         else:
             if not re.match(r"^\d{6,8}$", str(dni)):
                 raise HTTPException(422, "DNI debe tener entre 6 y 8 dígitos")
@@ -146,8 +195,8 @@ def expand_graph(
                 "WHERE numero_documento = ? AND tipo_documento = '1'",
                 [dni],
             ).fetchall()
+            seed_correlativos = [r[0] for r in rows]
 
-        seed_correlativos = [r[0] for r in rows]
         if not seed_correlativos:
             return GraphOut(nodes=[], edges=[])
 

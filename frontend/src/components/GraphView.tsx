@@ -57,6 +57,7 @@ const STYLES: cytoscape.StylesheetStyle[] = [
       "border-color": "#1e1e2e",
       "text-wrap": "wrap",
       "text-max-width": "120px",
+      "min-zoomed-font-size": 6,
       "text-background-color": "#1e1e2e",
       "text-background-opacity": 0.7,
       "text-background-padding": "3px",
@@ -64,7 +65,7 @@ const STYLES: cytoscape.StylesheetStyle[] = [
     },
   },
   { selector: "node[tipo = 'Sociedad']", style: { "background-color": "#7c4dff" } },
-  { selector: "node[tipo = 'Persona']",  style: { "background-color": "#ff6d00" } },
+  { selector: "node[tipo = 'PERSONA']",  style: { "background-color": "#ff6d00" } },
   { selector: "node[tipo = ''][role = 'source']", style: { "background-color": "#7c4dff" } },
   { selector: "node[tipo = ''][role = 'target']", style: { "background-color": "#e91e63" } },
   { selector: "node[tipo = ''][role = 'both']",   style: { "background-color": "#ff6d00" } },
@@ -111,11 +112,13 @@ const GraphView = forwardRef<GraphViewHandle, Props>(function GraphView(
 
     const saved = positionsRef.current;
 
-    // Save positions from previous instance before destroying
+    // Save positions and viewport from previous instance before destroying
+    let prevViewport: { zoom: number; pan: { x: number; y: number } } | null = null;
     if (cyRef.current) {
       cyRef.current.nodes().forEach((n) => {
         saved[n.id()] = { ...n.position() };
       });
+      prevViewport = { zoom: cyRef.current.zoom(), pan: { ...cyRef.current.pan() } };
       cyRef.current.destroy();
       cyRef.current = null;
     }
@@ -168,13 +171,27 @@ const GraphView = forwardRef<GraphViewHandle, Props>(function GraphView(
           ? LAYOUT_OPTS
           : { name: "circle", animate: false, padding: 60 },
       style: STYLES,
-      minZoom: 0.1,
+      minZoom: 0.05,
       maxZoom: 5,
       wheelSensitivity: 0.3,
+      pixelRatio: window.devicePixelRatio ?? 1,
+      boxSelectionEnabled: true,
     });
 
     // Save positions after layout completes
     cy.nodes().forEach((n) => { positionsRef.current[n.id()] = { ...n.position() }; });
+
+    // Fit all nodes into view after a fresh search
+    if (!hasOverlap) {
+      cy.fit(undefined, 40);
+      if (cy.zoom() < 0.15) cy.zoom(0.15);
+    }
+
+    // Restore viewport on expansion so zoom level is preserved
+    if (hasOverlap && prevViewport) {
+      cy.zoom(prevViewport.zoom);
+      cy.pan(prevViewport.pan);
+    }
 
     // Fit viewport when new nodes were added (expansion)
     if (hasOverlap && newNodes.length > 0) cy.fit(undefined, 40);
@@ -234,6 +251,15 @@ const GraphView = forwardRef<GraphViewHandle, Props>(function GraphView(
     });
     cy.on("tap", (e) => { if (e.target === cy) onNodeSelectRef.current(null); });
 
+    // Box-select: zoom viewport to the selected region then deselect
+    cy.on("boxend", () => {
+      const sel = cy.$(":selected");
+      if (sel.length > 0) {
+        cy.fit(sel, 60);
+        sel.unselect();
+      }
+    });
+
     cyRef.current = cy;
     return () => {
       if (cyRef.current) {
@@ -271,6 +297,34 @@ const GraphView = forwardRef<GraphViewHandle, Props>(function GraphView(
         ref={containerRef}
         style={{ width: "100%", height: "100%", background: "#0d0d1a", borderRadius: 10 }}
       />
+
+      {/* Zoom controls */}
+      <div style={{
+        position: "absolute", bottom: 16, right: 16, zIndex: 50,
+        display: "flex", flexDirection: "column", gap: 4,
+      }}>
+        {(["⊕", "⊖", "⊡"] as const).map((icon, i) => (
+          <button
+            key={icon}
+            title={["Acercar", "Alejar", "Ajustar todo"][i]}
+            onClick={() => {
+              const cy = cyRef.current;
+              if (!cy) return;
+              if (i === 0) cy.zoom({ level: cy.zoom() * 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+              else if (i === 1) cy.zoom({ level: cy.zoom() * 0.77, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+              else cy.fit(undefined, 40);
+            }}
+            style={{
+              width: 30, height: 30, borderRadius: 6,
+              background: "#1e1e3a", border: "1px solid #3a3a5a",
+              color: "#ccc", cursor: "pointer", fontSize: 16,
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}
+          >
+            {icon}
+          </button>
+        ))}
+      </div>
       {hoverBtn && (
         <button
           onMouseEnter={() => clearTimeout(hideTimerRef.current)}

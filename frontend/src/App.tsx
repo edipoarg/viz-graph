@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-route
 import DatasetListPage from "./pages/DatasetListPage";
 import UploadPage from "./pages/UploadPage";
 import GraphPage from "./pages/GraphPage";
+import IgjPage from "./pages/IgjPage";
 import LoginPage from "./pages/LoginPage";
 import { isAuthenticated } from "./api/auth";
 
@@ -39,6 +40,14 @@ export default function App() {
           element={
             <ProtectedRoute>
               <GraphPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/igj"
+          element={
+            <ProtectedRoute>
+              <IgjPage />
             </ProtectedRoute>
           }
         />
