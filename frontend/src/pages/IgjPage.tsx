@@ -62,7 +62,7 @@ export default function IgjPage() {
   const [directType, setDirectType] = useState<DirectSearchType>("cuit");
   const [directQuery, setDirectQuery] = useState("");
 
-  const [depth, setDepth] = useState(2);
+  const [depth, setDepth] = useState(1);
   const [graphData, setGraphData] = useState<GraphData>(EMPTY);
   const [relColorMap, setRelColorMap] = useState<Record<string, string>>(IGJ_COLORS);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
@@ -70,9 +70,11 @@ export default function IgjPage() {
   const [hidePersons, setHidePersons] = useState(false);
   const [hideEntities, setHideEntities] = useState(false);
   const [hiddenRelTypes, setHiddenRelTypes] = useState<Set<string>>(new Set());
+  const [rootNodeIds, setRootNodeIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [expanding, setExpanding] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const depthRef = useRef<number>(depth);
 
   const updateColors = (data: GraphData, current: Record<string, string>) => {
     const map = { ...current };
@@ -111,24 +113,55 @@ export default function IgjPage() {
     return () => clearTimeout(timer);
   }, [personInputValue]);
 
-  // Rebuild graph when selected entities, persons or depth change
+  // Rebuild graph when the selected search changes; if only the depth changes, add one extra layer.
   useEffect(() => {
     const correlativos = selectedEntities.map((e) => e.correlativo);
     const personas = selectedPersons.map((p) => `${p.tipo_documento}:${p.numero_documento}`);
     if (correlativos.length === 0 && personas.length === 0) return;
-    setLoading(true);
-    setError(null);
-    igjApi.expand({ correlativos, personas, depth })
-      .then((data) => {
-        setRelColorMap(updateColors(data, IGJ_COLORS));
-        setGraphData(data);
-        setHiddenNodeIds(new Set());
-        setHidePersons(false);
-        setHideEntities(false);
-        setHiddenRelTypes(new Set());
-      })
-      .catch(() => setError("Error al cargar el grafo."))
-      .finally(() => setLoading(false));
+
+    const doLoad = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const data = await igjApi.expand({ correlativos, personas, depth });
+        setRelColorMap((current) => updateColors(data, current));
+        const seedIds = new Set([
+          ...correlativos.map((id) => `e_${id}`),
+          ...personas.map((pair) => `p_${pair.replace(":", "_")}`),
+        ]);
+        setRootNodeIds((prev) => {
+          if (depth !== depthRef.current && prev.size > 0) return new Set([...prev, ...seedIds]);
+          return seedIds;
+        });
+        if (depth === depthRef.current) {
+          setGraphData(data);
+          setHiddenNodeIds(new Set());
+          setHidePersons(false);
+          setHideEntities(false);
+        } else {
+          setGraphData((prev) => mergeGraphData(prev, data));
+        }
+      } catch {
+        setError("Error al cargar el grafo.");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    const depthChanged = depth !== depthRef.current;
+    depthRef.current = depth;
+
+    if (depthChanged && graphData.nodes.length > 0) {
+      doLoad();
+      return;
+    }
+
+    setGraphData({ nodes: [], edges: [] });
+    setRootNodeIds(new Set(correlativos.map((id) => `e_${id}`)));
+    setHiddenNodeIds(new Set());
+    setHidePersons(false);
+    setHideEntities(false);
+    doLoad();
   }, [selectedEntities, selectedPersons, depth]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleDirectSearch = async () => {
@@ -140,17 +173,32 @@ export default function IgjPage() {
     try {
       const params = directType === "cuit" ? { cuit: q, depth } : { dni: q, depth };
       const data = await igjApi.expand(params);
-      setRelColorMap(updateColors(data, IGJ_COLORS));
+      setRelColorMap((current) => updateColors(data, current));
+      const seedIds = new Set(data.nodes.filter((n) => n.id.startsWith("e_")).map((n) => n.id));
+      setRootNodeIds(seedIds);
       setGraphData(data);
       setHiddenNodeIds(new Set());
       setHidePersons(false);
       setHideEntities(false);
-      setHiddenRelTypes(new Set());
     } catch {
       setError("No se encontraron resultados o hubo un error.");
     } finally {
       setLoading(false);
     }
+  };
+
+  const clearVisualization = () => {
+    setGraphData(EMPTY);
+    setSelectedEntities([]);
+    setSelectedPersons([]);
+    setDirectQuery("");
+    setSelectedNode(null);
+    setHiddenNodeIds(new Set());
+    setHidePersons(false);
+    setHideEntities(false);
+    setHiddenRelTypes(new Set());
+    setRootNodeIds(new Set());
+    setError(null);
   };
 
   const handleNodeExpand = async (node: GraphNode) => {
@@ -170,6 +218,7 @@ export default function IgjPage() {
       }
       const incoming = await igjApi.expand(params);
       setRelColorMap((c) => updateColors(incoming, c));
+      setRootNodeIds((prev) => new Set([...prev, ...incoming.nodes.filter((n) => n.id.startsWith("e_")).map((n) => n.id)]));
       setGraphData((prev) => mergeGraphData(prev, incoming));
     } catch {
       setError("Error al expandir el nodo.");
@@ -183,18 +232,25 @@ export default function IgjPage() {
     if (selectedNode?.id === nodeId) setSelectedNode(null);
   };
 
-  const visibleData = useMemo((): GraphData => ({
-    nodes: graphData.nodes.filter((n) =>
-      !hiddenNodeIds.has(n.id) &&
-      !(hidePersons && n.tipo === "PERSONA") &&
-      !(hideEntities && n.tipo !== "PERSONA")
-    ),
-    edges: graphData.edges.filter((e) =>
+  const visibleData = useMemo((): GraphData => {
+    const visibleEdges = graphData.edges.filter((e) =>
       !hiddenNodeIds.has(e.source) &&
       !hiddenNodeIds.has(e.target) &&
       !hiddenRelTypes.has(e.type)
-    ),
-  }), [graphData, hiddenNodeIds, hidePersons, hideEntities, hiddenRelTypes]);
+    );
+    const visibleNodeIds = new Set(visibleEdges.flatMap((e) => [e.source, e.target]));
+    for (const id of rootNodeIds) visibleNodeIds.add(id);
+
+    return {
+      nodes: graphData.nodes.filter((n) =>
+        !hiddenNodeIds.has(n.id) &&
+        !(hidePersons && n.tipo === "PERSONA") &&
+        !(hideEntities && n.tipo !== "PERSONA") &&
+        (rootNodeIds.has(n.id) || visibleNodeIds.has(n.id))
+      ),
+      edges: visibleEdges,
+    };
+  }, [graphData, hiddenNodeIds, hidePersons, hideEntities, hiddenRelTypes, rootNodeIds]);
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100vh", bgcolor: "#0d0d1a" }}>
@@ -333,6 +389,11 @@ export default function IgjPage() {
           </Select>
         </FormControl>
 
+        <Button variant="outlined" size="small" sx={{ color: "#ddd", borderColor: "#555" }}
+          onClick={clearVisualization}>
+          Borrar visualización
+        </Button>
+
         {(loading || expanding) && <CircularProgress size={20} sx={{ color: "#7c4dff" }} />}
 
         {graphData.nodes.length > 0 && (<>
@@ -393,7 +454,8 @@ export default function IgjPage() {
           </Box>
         ) : (
           <GraphView ref={graphViewRef} data={visibleData} onNodeSelect={setSelectedNode}
-            selectedNodeId={selectedNode?.id ?? null} onHideNode={handleHideNode} relColorMap={relColorMap} />
+            selectedNodeId={selectedNode?.id ?? null} onHideNode={handleHideNode} relColorMap={relColorMap}
+            rootNodeIds={rootNodeIds} />
         )}
       </Box>
     </Box>

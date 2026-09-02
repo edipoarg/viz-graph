@@ -12,6 +12,7 @@ interface Props {
   selectedNodeId: string | null;
   onHideNode: (nodeId: string) => void;
   relColorMap: Record<string, string>;
+  rootNodeIds?: Set<string>;
 }
 
 
@@ -32,11 +33,11 @@ function nodeSize(id: string, deg: Record<string, number>, maxDeg: number): numb
 const LAYOUT_OPTS = {
   name: "cose",
   animate: false,
-  nodeRepulsion: () => 120000,
-  idealEdgeLength: () => 250,
-  gravity: 0.05,
-  numIter: 800,
-  coolingFactor: 0.95,
+  nodeRepulsion: () => 7000,
+  idealEdgeLength: () => 45,
+  gravity: 0.35,
+  numIter: 450,
+  coolingFactor: 0.98,
   minTemp: 1.0,
 };
 
@@ -69,6 +70,12 @@ const STYLES: cytoscape.StylesheetStyle[] = [
   { selector: "node[tipo = ''][role = 'source']", style: { "background-color": "#7c4dff" } },
   { selector: "node[tipo = ''][role = 'target']", style: { "background-color": "#e91e63" } },
   { selector: "node[tipo = ''][role = 'both']",   style: { "background-color": "#ff6d00" } },
+  { selector: "node[isSeed = 'true']", style: {
+      "border-width": 4,
+      "border-color": "#f9d976",
+      "font-size": "11px",
+      "font-weight": "bold",
+    } },
   { selector: "node:selected", style: { "background-color": "#03dac6", "border-color": "#ffffff", "border-width": 3 } },
   {
     selector: "edge",
@@ -90,7 +97,7 @@ const STYLES: cytoscape.StylesheetStyle[] = [
 ];
 
 const GraphView = forwardRef<GraphViewHandle, Props>(function GraphView(
-  { data, onNodeSelect, selectedNodeId, onHideNode, relColorMap },
+  { data, onNodeSelect, selectedNodeId, onHideNode, relColorMap, rootNodeIds = new Set() },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -132,31 +139,59 @@ const GraphView = forwardRef<GraphViewHandle, Props>(function GraphView(
     // For fresh search, clear stale positions
     if (!hasOverlap) positionsRef.current = {};
 
-    // Pre-position new nodes around the selected anchor
+    // Pre-position new nodes in a compact radial cluster around the selected anchor.
     const newNodes = data.nodes.filter((n) => !saved[n.id]);
     if (hasOverlap && newNodes.length > 0) {
       const anchorId = selectedNodeIdRef.current ?? "";
       const anchor = saved[anchorId] ?? { x: 400, y: 300 };
-      const R = Math.max(200, newNodes.length * 15);
+      const existingPositions = Object.values(saved);
+      const minSpacing = 50;
       newNodes.forEach((n, i) => {
-        saved[n.id] = {
-          x: anchor.x + R * Math.cos((2 * Math.PI * i) / newNodes.length),
-          y: anchor.y + R * Math.sin((2 * Math.PI * i) / newNodes.length),
-        };
+        let angle = (2 * Math.PI * i) / Math.max(1, newNodes.length);
+        let radius = 70 + i * 14;
+        let placed = false;
+
+        for (let attempt = 0; attempt < 30 && !placed; attempt += 1) {
+          const candidate = {
+            x: anchor.x + radius * Math.cos(angle),
+            y: anchor.y + radius * Math.sin(angle),
+          };
+          const overlaps = existingPositions.some((p) => Math.hypot(p.x - candidate.x, p.y - candidate.y) < minSpacing);
+          if (!overlaps) {
+            saved[n.id] = candidate;
+            existingPositions.push(candidate);
+            placed = true;
+          } else {
+            angle += (Math.PI / 12) + (attempt * 0.06);
+            radius += 16;
+          }
+        }
+
+        if (!placed) {
+          saved[n.id] = {
+            x: anchor.x + 80 + i * 35,
+            y: anchor.y + 70 * Math.sin(i + 1),
+          };
+        }
       });
     }
 
     const cy = cytoscape({
       container: containerRef.current,
       elements: [
-        ...data.nodes.map((n) => ({
-          data: {
-            id: n.id, label: n.name, role: n.role ?? "both",
-            tipo: n.tipo ?? "", cuit: n.cuit ?? "", actividad: n.actividad_descripcion ?? "",
-            degree: deg[n.id] ?? 0, size: nodeSize(n.id, deg, maxDeg),
-          },
-          ...(hasOverlap && saved[n.id] ? { position: saved[n.id] } : {}),
-        })),
+        ...data.nodes.map((n) => {
+          const isSeed = rootNodeIds.has(n.id);
+          return {
+            data: {
+              id: n.id, label: n.name, role: n.role ?? "both",
+              tipo: n.tipo ?? "", cuit: n.cuit ?? "", actividad: n.actividad_descripcion ?? "",
+              degree: deg[n.id] ?? 0,
+              size: nodeSize(n.id, deg, maxDeg) * (isSeed ? 1.35 : 1),
+              isSeed: isSeed ? "true" : "false",
+            },
+            ...(hasOverlap && saved[n.id] ? { position: saved[n.id] } : {}),
+          };
+        }),
         ...data.edges.map((e) => ({
           data: {
             id: e.id, source: e.source, target: e.target,
@@ -183,18 +218,20 @@ const GraphView = forwardRef<GraphViewHandle, Props>(function GraphView(
 
     // Fit all nodes into view after a fresh search
     if (!hasOverlap) {
-      cy.fit(undefined, 40);
-      if (cy.zoom() < 0.15) cy.zoom(0.15);
+      cy.fit(undefined, 50);
+      if (cy.zoom() < 0.22) cy.zoom(0.22);
     }
 
-    // Restore viewport on expansion so zoom level is preserved
+    // Restore viewport on expansion so zoom level is preserved and we do not zoom out unexpectedly.
     if (hasOverlap && prevViewport) {
       cy.zoom(prevViewport.zoom);
       cy.pan(prevViewport.pan);
     }
 
-    // Fit viewport when new nodes were added (expansion)
-    if (hasOverlap && newNodes.length > 0) cy.fit(undefined, 40);
+    // If the graph shrank because a relation filter was removed, compact the viewport so it stays visible.
+    if (hasOverlap && newNodes.length === 0) {
+      cy.fit(undefined, 45);
+    }
 
     // ── Drag neighbors ────────────────────────────────────────────────────
     let dragStartPos: { x: number; y: number } | null = null;
