@@ -127,6 +127,7 @@ export interface IgjEntityOption {
   name: string;
   cuit: string | null;
   tipo: string;
+  n_relaciones: number;
 }
 
 export interface IgjPersonOption {
@@ -134,6 +135,7 @@ export interface IgjPersonOption {
   numero_documento: string;
   name: string;
   n_entidades: number;
+  n_relaciones: number;
 }
 
 export const igjApi = {
@@ -141,6 +143,10 @@ export const igjApi = {
     api.get<IgjEntityOption[]>("/igj/search", { params: { q } }).then((r) => r.data),
   searchPersonas: (q: string) =>
     api.get<IgjPersonOption[]>("/igj/search", { params: { q, tipo: "persona" } }).then((r) => r.data),
+  path: (fromNode: string, toNode: string) =>
+    api
+      .get<GraphData>("/igj/path", { params: { from_node: fromNode, to_node: toNode } })
+      .then((r) => r.data),
   expand: (params: {
     correlativos?: string[];
     personas?: string[];  // "tipo_doc:num_doc" pairs

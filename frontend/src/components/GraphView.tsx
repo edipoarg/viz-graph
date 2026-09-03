@@ -30,6 +30,15 @@ function nodeSize(id: string, deg: Record<string, number>, maxDeg: number): numb
   return 15 + 65 * Math.sqrt((d - 1) / Math.max(1, maxDeg - 1));
 }
 
+function elasticFactor(nodeId: string, min = 0.32, span = 0.36): number {
+  // Deterministic per-node factor so drag feel is stable between renders.
+  let hash = 0;
+  for (let i = 0; i < nodeId.length; i += 1) {
+    hash = (hash * 31 + nodeId.charCodeAt(i)) >>> 0;
+  }
+  return min + ((hash % 1000) / 1000) * span;
+}
+
 const LAYOUT_OPTS = {
   name: "cose",
   animate: false,
@@ -139,40 +148,102 @@ const GraphView = forwardRef<GraphViewHandle, Props>(function GraphView(
     // For fresh search, clear stale positions
     if (!hasOverlap) positionsRef.current = {};
 
-    // Pre-position new nodes in a compact radial cluster around the selected anchor.
+    // Pre-position new nodes.
+    // If they connect to existing visible nodes, place them near the selected anchor.
+    // If they form a disconnected component, place that component far from current graph bounds.
     const newNodes = data.nodes.filter((n) => !saved[n.id]);
     if (hasOverlap && newNodes.length > 0) {
+      const existingIds = new Set(data.nodes.filter((n) => !!saved[n.id]).map((n) => n.id));
+      const newNodeIds = new Set(newNodes.map((n) => n.id));
+      const adjacency = new Map<string, Set<string>>();
+      newNodes.forEach((n) => adjacency.set(n.id, new Set()));
+
+      data.edges.forEach((e) => {
+        if (newNodeIds.has(e.source) && newNodeIds.has(e.target)) {
+          adjacency.get(e.source)?.add(e.target);
+          adjacency.get(e.target)?.add(e.source);
+        }
+      });
+
+      const linkedToExisting = new Set<string>();
+      data.edges.forEach((e) => {
+        if (newNodeIds.has(e.source) && existingIds.has(e.target)) linkedToExisting.add(e.source);
+        if (newNodeIds.has(e.target) && existingIds.has(e.source)) linkedToExisting.add(e.target);
+      });
+
+      const components: Array<{ ids: string[]; linked: boolean }> = [];
+      const seen = new Set<string>();
+      newNodes.forEach((n) => {
+        if (seen.has(n.id)) return;
+        const stack = [n.id];
+        const ids: string[] = [];
+        let linked = false;
+
+        while (stack.length > 0) {
+          const curId = stack.pop();
+          if (!curId || seen.has(curId)) continue;
+          seen.add(curId);
+          ids.push(curId);
+          if (linkedToExisting.has(curId)) linked = true;
+
+          const neighbors = adjacency.get(curId);
+          if (!neighbors) continue;
+          neighbors.forEach((nb) => {
+            if (!seen.has(nb)) stack.push(nb);
+          });
+        }
+
+        components.push({ ids, linked });
+      });
+
       const anchorId = selectedNodeIdRef.current ?? "";
       const anchor = saved[anchorId] ?? { x: 400, y: 300 };
       const existingPositions = Object.values(saved);
       const minSpacing = 50;
-      newNodes.forEach((n, i) => {
-        let angle = (2 * Math.PI * i) / Math.max(1, newNodes.length);
-        let radius = 70 + i * 14;
-        let placed = false;
+      const bounds = cyRef.current?.nodes().boundingBox() ?? { x1: 0, y1: 0, x2: 800, y2: 600, w: 800, h: 600 };
+      const farBaseX = bounds.x2 + Math.max(260, bounds.w * 0.35);
+      const farBaseY = bounds.y2 + Math.max(220, bounds.h * 0.25);
+      let disconnectedIndex = 0;
 
-        for (let attempt = 0; attempt < 30 && !placed; attempt += 1) {
-          const candidate = {
-            x: anchor.x + radius * Math.cos(angle),
-            y: anchor.y + radius * Math.sin(angle),
-          };
-          const overlaps = existingPositions.some((p) => Math.hypot(p.x - candidate.x, p.y - candidate.y) < minSpacing);
-          if (!overlaps) {
-            saved[n.id] = candidate;
-            existingPositions.push(candidate);
-            placed = true;
-          } else {
-            angle += (Math.PI / 12) + (attempt * 0.06);
-            radius += 16;
+      components.forEach((component) => {
+        const compNodes = component.ids;
+        const componentAnchor = component.linked
+          ? anchor
+          : {
+              x: farBaseX + (disconnectedIndex % 3) * 260,
+              y: farBaseY + Math.floor(disconnectedIndex / 3) * 220,
+            };
+        if (!component.linked) disconnectedIndex += 1;
+
+        compNodes.forEach((nodeId, i) => {
+          let angle = (2 * Math.PI * i) / Math.max(1, compNodes.length);
+          let radius = 70 + i * 14;
+          let placed = false;
+
+          for (let attempt = 0; attempt < 30 && !placed; attempt += 1) {
+            const candidate = {
+              x: componentAnchor.x + radius * Math.cos(angle),
+              y: componentAnchor.y + radius * Math.sin(angle),
+            };
+            const overlaps = existingPositions.some((p) => Math.hypot(p.x - candidate.x, p.y - candidate.y) < minSpacing);
+            if (!overlaps) {
+              saved[nodeId] = candidate;
+              existingPositions.push(candidate);
+              placed = true;
+            } else {
+              angle += (Math.PI / 12) + (attempt * 0.06);
+              radius += 16;
+            }
           }
-        }
 
-        if (!placed) {
-          saved[n.id] = {
-            x: anchor.x + 80 + i * 35,
-            y: anchor.y + 70 * Math.sin(i + 1),
-          };
-        }
+          if (!placed) {
+            saved[nodeId] = {
+              x: componentAnchor.x + 80 + i * 35,
+              y: componentAnchor.y + 70 * Math.sin(i + 1),
+            };
+            existingPositions.push(saved[nodeId]);
+          }
+        });
       });
     }
 
@@ -233,34 +304,66 @@ const GraphView = forwardRef<GraphViewHandle, Props>(function GraphView(
       cy.fit(undefined, 45);
     }
 
-    // ── Drag neighbors ────────────────────────────────────────────────────
+    // ── Drag with elastic neighborhood response ──────────────────────────
     let dragStartPos: { x: number; y: number } | null = null;
-    const neighborStartPos = new Map<string, { x: number; y: number }>();
+    let dragNodeId: string | null = null;
+    const firstHopStartPos = new Map<string, { x: number; y: number }>();
+    const secondHopStartPos = new Map<string, { x: number; y: number }>();
 
     cy.on("grabon", "node", (e) => {
       const node = e.target as NodeSingular;
+      dragNodeId = node.id();
       dragStartPos = { ...node.position() };
-      neighborStartPos.clear();
+      firstHopStartPos.clear();
+      secondHopStartPos.clear();
+
+      const firstHopIds = new Set<string>();
       node.neighborhood("node").forEach((nb: NodeSingular) => {
-        neighborStartPos.set(nb.id(), { ...nb.position() });
+        firstHopIds.add(nb.id());
+        firstHopStartPos.set(nb.id(), { ...nb.position() });
+      });
+
+      firstHopIds.forEach((nid) => {
+        const n1 = cy.getElementById(nid);
+        n1.neighborhood("node").forEach((n2: NodeSingular) => {
+          const n2id = n2.id();
+          if (n2id === dragNodeId || firstHopIds.has(n2id)) return;
+          if (!secondHopStartPos.has(n2id)) {
+            secondHopStartPos.set(n2id, { ...n2.position() });
+          }
+        });
       });
     });
+
     cy.on("drag", "node", (e) => {
-      if (!dragStartPos) return;
+      if (!dragStartPos || !dragNodeId) return;
       const node = e.target as NodeSingular;
       const cur = node.position();
       const dx = cur.x - dragStartPos.x;
       const dy = cur.y - dragStartPos.y;
-      node.neighborhood("node").forEach((nb: NodeSingular) => {
-        const sp = neighborStartPos.get(nb.id());
-        if (sp && !nb.grabbed()) nb.position({ x: sp.x + dx * 0.85, y: sp.y + dy * 0.85 });
+
+      firstHopStartPos.forEach((sp, nid) => {
+        const nb = cy.getElementById(nid);
+        if (nb.empty() || nb.grabbed()) return;
+        const k = elasticFactor(nid, 0.38, 0.34);
+        nb.position({ x: sp.x + dx * k, y: sp.y + dy * k });
+      });
+
+      secondHopStartPos.forEach((sp, nid) => {
+        const nb = cy.getElementById(nid);
+        if (nb.empty() || nb.grabbed()) return;
+        const k = elasticFactor(nid, 0.10, 0.14);
+        nb.position({ x: sp.x + dx * k, y: sp.y + dy * k });
       });
     });
+
     cy.on("free", "node", () => {
       // Persist updated positions after drag
       cy.nodes().forEach((n) => { positionsRef.current[n.id()] = { ...n.position() }; });
       dragStartPos = null;
-      neighborStartPos.clear();
+      dragNodeId = null;
+      firstHopStartPos.clear();
+      secondHopStartPos.clear();
     });
 
     // ── X button on hover ─────────────────────────────────────────────────

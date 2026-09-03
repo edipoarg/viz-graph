@@ -20,7 +20,8 @@ import {
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import SearchIcon from "@mui/icons-material/Search";
 import DownloadIcon from "@mui/icons-material/Download";
-import { useNavigate } from "react-router-dom";
+import AltRouteIcon from "@mui/icons-material/AltRoute";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { igjApi, type IgjEntityOption, type IgjPersonOption } from "../api/client";
 import type { GraphData, GraphNode } from "../types";
 import GraphView, { type GraphViewHandle } from "../components/GraphView";
@@ -35,6 +36,8 @@ const EXTRA_PALETTE = ["#e91e63", "#00bcd4", "#8bc34a", "#ff5722", "#9c27b0", "#
 
 type DirectSearchType = "cuit" | "dni";
 const EMPTY: GraphData = { nodes: [], edges: [] };
+type ExpansionDelta = { nodeId: string; addedNodeIds: string[]; addedEdgeIds: string[] };
+type IgjPathOption = { id: string; name: string; subtitle: string; rank: number };
 
 function mergeGraphData(base: GraphData, incoming: GraphData): GraphData {
   const nodeIds = new Set(base.nodes.map((n) => n.id));
@@ -47,6 +50,8 @@ function mergeGraphData(base: GraphData, incoming: GraphData): GraphData {
 
 export default function IgjPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const mode = searchParams.get("mode") === "path" ? "path" : "explore";
   const graphViewRef = useRef<GraphViewHandle>(null);
 
   const [inputValue, setInputValue] = useState("");
@@ -73,8 +78,53 @@ export default function IgjPage() {
   const [rootNodeIds, setRootNodeIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [expanding, setExpanding] = useState(false);
+  const [expansionDeltas, setExpansionDeltas] = useState<ExpansionDelta[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [pathFromId, setPathFromId] = useState("");
+  const [pathToId, setPathToId] = useState("");
+  const [selectedPathFrom, setSelectedPathFrom] = useState<IgjPathOption | null>(null);
+  const [selectedPathTo, setSelectedPathTo] = useState<IgjPathOption | null>(null);
+  const [pathFromInput, setPathFromInput] = useState("");
+  const [pathToInput, setPathToInput] = useState("");
+  const [pathFromOptions, setPathFromOptions] = useState<IgjPathOption[]>([]);
+  const [pathToOptions, setPathToOptions] = useState<IgjPathOption[]>([]);
+  const [loadingPathFromOptions, setLoadingPathFromOptions] = useState(false);
+  const [loadingPathToOptions, setLoadingPathToOptions] = useState(false);
+  const [pathLoading, setPathLoading] = useState(false);
+  const [pathError, setPathError] = useState<string | null>(null);
   const depthRef = useRef<number>(depth);
+
+  const searchPathOptions = async (q: string): Promise<IgjPathOption[]> => {
+    const term = q.trim();
+    if (term.length < 2) return [];
+
+    const [entities, persons] = await Promise.all([
+      igjApi.search(term),
+      igjApi.searchPersonas(term),
+    ]);
+
+    const entityOpts: IgjPathOption[] = entities.map((e) => ({
+      id: `e_${e.correlativo}`,
+      name: e.name,
+      subtitle: `${e.tipo || "Entidad"}${e.cuit ? ` · ${e.cuit}` : ""} · ${e.n_relaciones} relaciones`,
+      rank: e.n_relaciones,
+    }));
+
+    const personOpts: IgjPathOption[] = persons.map((p) => ({
+      id: `p_1_${p.numero_documento}`,
+      name: p.name,
+      subtitle: `DNI ${p.numero_documento} · ${p.n_relaciones} relaciones`,
+      rank: p.n_relaciones,
+    }));
+
+    const dedup = new Map<string, IgjPathOption>();
+    [...entityOpts, ...personOpts]
+      .sort((a, b) => b.rank - a.rank)
+      .forEach((o) => {
+        if (!dedup.has(o.id)) dedup.set(o.id, o);
+      });
+    return Array.from(dedup.values()).slice(0, 25);
+  };
 
   const updateColors = (data: GraphData, current: Record<string, string>) => {
     const map = { ...current };
@@ -113,6 +163,42 @@ export default function IgjPage() {
     return () => clearTimeout(timer);
   }, [personInputValue]);
 
+  // Debounced path-from autocomplete fetch (global search)
+  useEffect(() => {
+    if (mode !== "path") return;
+    const term = pathFromInput.trim();
+    if (term.length < 2) {
+      setPathFromOptions([]);
+      return;
+    }
+    const timer = setTimeout(() => {
+      setLoadingPathFromOptions(true);
+      searchPathOptions(term)
+        .then(setPathFromOptions)
+        .catch(() => setPathFromOptions([]))
+        .finally(() => setLoadingPathFromOptions(false));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [mode, pathFromInput]);
+
+  // Debounced path-to autocomplete fetch (global search)
+  useEffect(() => {
+    if (mode !== "path") return;
+    const term = pathToInput.trim();
+    if (term.length < 2) {
+      setPathToOptions([]);
+      return;
+    }
+    const timer = setTimeout(() => {
+      setLoadingPathToOptions(true);
+      searchPathOptions(term)
+        .then(setPathToOptions)
+        .catch(() => setPathToOptions([]))
+        .finally(() => setLoadingPathToOptions(false));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [mode, pathToInput]);
+
   // Rebuild graph when the selected search changes; if only the depth changes, add one extra layer.
   useEffect(() => {
     const correlativos = selectedEntities.map((e) => e.correlativo);
@@ -135,11 +221,13 @@ export default function IgjPage() {
         });
         if (depth === depthRef.current) {
           setGraphData(data);
+          setExpansionDeltas([]);
           setHiddenNodeIds(new Set());
           setHidePersons(false);
           setHideEntities(false);
         } else {
           setGraphData((prev) => mergeGraphData(prev, data));
+          setExpansionDeltas([]);
         }
       } catch {
         setError("Error al cargar el grafo.");
@@ -157,6 +245,7 @@ export default function IgjPage() {
     }
 
     setGraphData({ nodes: [], edges: [] });
+    setExpansionDeltas([]);
     setRootNodeIds(new Set(correlativos.map((id) => `e_${id}`)));
     setHiddenNodeIds(new Set());
     setHidePersons(false);
@@ -177,6 +266,7 @@ export default function IgjPage() {
       const seedIds = new Set(data.nodes.filter((n) => n.id.startsWith("e_")).map((n) => n.id));
       setRootNodeIds(seedIds);
       setGraphData(data);
+      setExpansionDeltas([]);
       setHiddenNodeIds(new Set());
       setHidePersons(false);
       setHideEntities(false);
@@ -189,6 +279,7 @@ export default function IgjPage() {
 
   const clearVisualization = () => {
     setGraphData(EMPTY);
+    setExpansionDeltas([]);
     setSelectedEntities([]);
     setSelectedPersons([]);
     setDirectQuery("");
@@ -217,14 +308,63 @@ export default function IgjPage() {
         return;
       }
       const incoming = await igjApi.expand(params);
-      setRelColorMap((c) => updateColors(incoming, c));
-      setRootNodeIds((prev) => new Set([...prev, ...incoming.nodes.filter((n) => n.id.startsWith("e_")).map((n) => n.id)]));
-      setGraphData((prev) => mergeGraphData(prev, incoming));
+      const directEdges = incoming.edges.filter((e) => e.source === node.id || e.target === node.id);
+      const directNodeIds = new Set<string>([node.id]);
+      directEdges.forEach((e) => {
+        directNodeIds.add(e.source);
+        directNodeIds.add(e.target);
+      });
+      const directNodes = incoming.nodes.filter((n) => directNodeIds.has(n.id));
+      const directData: GraphData = { nodes: directNodes, edges: directEdges };
+
+      const prevNodeIds = new Set(graphData.nodes.map((n) => n.id));
+      const prevEdgeIds = new Set(graphData.edges.map((e) => e.id));
+      const addedNodeIds = directNodes.map((n) => n.id).filter((nid) => !prevNodeIds.has(nid));
+      const addedEdgeIds = directEdges.map((e) => e.id).filter((eid) => !prevEdgeIds.has(eid));
+
+      setRelColorMap((c) => updateColors(directData, c));
+      setRootNodeIds((prev) => new Set([...prev, ...directNodes.filter((n) => n.id.startsWith("e_")).map((n) => n.id)]));
+      setGraphData((prev) => mergeGraphData(prev, directData));
+      if (addedNodeIds.length > 0 || addedEdgeIds.length > 0) {
+        setExpansionDeltas((prev) => [...prev, { nodeId: node.id, addedNodeIds, addedEdgeIds }]);
+      }
     } catch {
       setError("Error al expandir el nodo.");
     } finally {
       setExpanding(false);
     }
+  };
+
+  const handleNodeCollapse = (node: GraphNode) => {
+    if (expansionDeltas.length === 0) return;
+
+    let idx = -1;
+    for (let i = expansionDeltas.length - 1; i >= 0; i -= 1) {
+      if (expansionDeltas[i].nodeId === node.id) {
+        idx = i;
+        break;
+      }
+    }
+    if (idx < 0) return;
+
+    const target = expansionDeltas[idx];
+    const remaining = expansionDeltas.filter((_, i) => i !== idx);
+
+    const preservedNodes = new Set<string>(rootNodeIds);
+    const preservedEdges = new Set<string>();
+    remaining.forEach((r) => {
+      r.addedNodeIds.forEach((nid) => preservedNodes.add(nid));
+      r.addedEdgeIds.forEach((eid) => preservedEdges.add(eid));
+    });
+
+    const removeNodeIds = new Set(target.addedNodeIds.filter((nid) => !preservedNodes.has(nid)));
+    const removeEdgeIds = new Set(target.addedEdgeIds.filter((eid) => !preservedEdges.has(eid)));
+
+    setGraphData((prev) => ({
+      nodes: prev.nodes.filter((n) => !removeNodeIds.has(n.id)),
+      edges: prev.edges.filter((e) => !removeEdgeIds.has(e.id)),
+    }));
+    setExpansionDeltas(remaining);
   };
 
   const handleHideNode = (nodeId: string) => {
@@ -239,18 +379,57 @@ export default function IgjPage() {
       !hiddenRelTypes.has(e.type)
     );
     const visibleNodeIds = new Set(visibleEdges.flatMap((e) => [e.source, e.target]));
-    for (const id of rootNodeIds) visibleNodeIds.add(id);
 
     return {
       nodes: graphData.nodes.filter((n) =>
         !hiddenNodeIds.has(n.id) &&
         !(hidePersons && n.tipo === "PERSONA") &&
         !(hideEntities && n.tipo !== "PERSONA") &&
-        (rootNodeIds.has(n.id) || visibleNodeIds.has(n.id))
+        visibleNodeIds.has(n.id)
       ),
       edges: visibleEdges,
     };
-  }, [graphData, hiddenNodeIds, hidePersons, hideEntities, hiddenRelTypes, rootNodeIds]);
+  }, [graphData, hiddenNodeIds, hidePersons, hideEntities, hiddenRelTypes]);
+
+  const pathFromOption = selectedPathFrom;
+  const pathToOption = selectedPathTo;
+
+  const selectedNodeRelationCount = useMemo(() => {
+    if (!selectedNode) return 0;
+    return graphData.edges.filter(
+      (e) => e.source === selectedNode.id || e.target === selectedNode.id
+    ).length;
+  }, [graphData, selectedNode]);
+
+  const canCollapseSelected = !!selectedNode && expansionDeltas.some((d) => d.nodeId === selectedNode.id);
+
+  const handleShortestPath = () => {
+    if (!pathFromId || !pathToId) return;
+    if (pathFromId === pathToId) {
+      setPathError("Selecciona dos nodos distintos.");
+      return;
+    }
+
+    setPathLoading(true);
+    igjApi.path(pathFromId, pathToId)
+      .then((data) => {
+        if (data.nodes.length === 0) {
+          setPathError("No se encontro un camino entre los nodos seleccionados.");
+          return;
+        }
+        setGraphData(data);
+        setExpansionDeltas([]);
+        setHiddenNodeIds(new Set());
+        setHiddenRelTypes(new Set());
+        setHidePersons(false);
+        setHideEntities(false);
+        setRootNodeIds(new Set(data.nodes.filter((n) => n.id.startsWith("e_")).map((n) => n.id)));
+        setSelectedNode(null);
+        setPathError(null);
+      })
+      .catch(() => setPathError("No se pudo calcular el camino mas corto global."))
+      .finally(() => setPathLoading(false));
+  };
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100vh", bgcolor: "#0d0d1a" }}>
@@ -262,137 +441,268 @@ export default function IgjPage() {
         <Typography variant="subtitle1" sx={{ color: "#fff", fontWeight: 600 }}>
           IGJ — Datos Societarios
         </Typography>
+        {mode === "path" && (
+          <Chip
+            icon={<AltRouteIcon />}
+            label="Modo camino mas corto"
+            size="small"
+            sx={{ bgcolor: "#2a2a3e", color: "#ddd", border: "1px solid #4a4a6a" }}
+          />
+        )}
 
-        {/* Multi-select autocomplete for societies by name */}
-        <Autocomplete
-          multiple size="small"
-          options={options}
-          value={selectedEntities}
-          inputValue={inputValue}
-          loading={loadingOptions}
-          getOptionLabel={(o) => o.name}
-          isOptionEqualToValue={(a, b) => a.correlativo === b.correlativo}
-          filterOptions={(x) => x}
-          onInputChange={(_, v, reason) => { if (reason !== "reset") setInputValue(v); }}
-          onChange={(_, v) => setSelectedEntities(v)}
-          renderOption={(props, o) => (
-            <li {...props} key={o.correlativo}>
-              <Box>
-                <Typography variant="body2">{o.name}</Typography>
-                <Typography variant="caption" sx={{ color: "#888" }}>
-                  {o.tipo}{o.cuit ? ` · ${o.cuit}` : ""}
-                </Typography>
-              </Box>
-            </li>
-          )}
-          renderTags={(value, getTagProps) =>
-            value.map((o, i) => (
-              <Chip {...getTagProps({ index: i })} key={o.correlativo} label={o.name}
-                size="small" sx={{ maxWidth: 160, fontSize: 11 }} />
-            ))
-          }
-          sx={{
-            width: 380, minWidth: 200,
-            "& .MuiOutlinedInput-notchedOutline": { borderColor: "#444" },
-            "& input": { color: "#fff" },
-            "& .MuiChip-root": { bgcolor: "#7c4dff33", color: "#ccc" },
-          }}
-          renderInput={(params) => (
-            <TextField {...params} placeholder={selectedEntities.length === 0 ? "Buscar sociedad por nombre…" : ""}
-              InputProps={{ ...params.InputProps,
-                endAdornment: (<>
-                  {loadingOptions && <CircularProgress size={14} sx={{ color: "#7c4dff" }} />}
-                  {params.InputProps.endAdornment}
-                </>),
+        {mode !== "path" && (
+          <>
+            {/* Multi-select autocomplete for societies by name */}
+            <Autocomplete
+              multiple size="small"
+              options={options}
+              value={selectedEntities}
+              inputValue={inputValue}
+              loading={loadingOptions}
+              getOptionLabel={(o) => o.name}
+              isOptionEqualToValue={(a, b) => a.correlativo === b.correlativo}
+              filterOptions={(x) => x}
+              onInputChange={(_, v, reason) => { if (reason !== "reset") setInputValue(v); }}
+              onChange={(_, v) => setSelectedEntities(v)}
+              renderOption={(props, o) => (
+                <li {...props} key={o.correlativo}>
+                  <Box>
+                    <Typography variant="body2">{o.name}</Typography>
+                    <Typography variant="caption" sx={{ color: "#888" }}>
+                      {o.tipo}{o.cuit ? ` · ${o.cuit}` : ""} · {o.n_relaciones} relaci{o.n_relaciones !== 1 ? "ones" : "on"}
+                    </Typography>
+                  </Box>
+                </li>
+              )}
+              renderTags={(value, getTagProps) =>
+                value.map((o, i) => (
+                  <Chip {...getTagProps({ index: i })} key={o.correlativo} label={o.name}
+                    size="small" sx={{ maxWidth: 160, fontSize: 11 }} />
+                ))
+              }
+              sx={{
+                width: 380, minWidth: 200,
+                "& .MuiOutlinedInput-notchedOutline": { borderColor: "#444" },
+                "& input": { color: "#fff" },
+                "& .MuiChip-root": { bgcolor: "#7c4dff33", color: "#ccc" },
               }}
+              renderInput={(params) => (
+                <TextField {...params} placeholder={selectedEntities.length === 0 ? "Buscar sociedad por nombre…" : ""}
+                  InputProps={{ ...params.InputProps,
+                    endAdornment: (<>
+                      {loadingOptions && <CircularProgress size={14} sx={{ color: "#7c4dff" }} />}
+                      {params.InputProps.endAdornment}
+                    </>),
+                  }}
+                />
+              )}
             />
-          )}
-        />
 
-        {/* Person multi-select autocomplete */}
-        <Autocomplete
-          multiple size="small"
-          options={personOptions}
-          value={selectedPersons}
-          inputValue={personInputValue}
-          loading={loadingPersonOptions}
-          getOptionLabel={(o) => o.name}
-          isOptionEqualToValue={(a, b) => a.tipo_documento === b.tipo_documento && a.numero_documento === b.numero_documento}
-          filterOptions={(x) => x}
-          onInputChange={(_, v, reason) => { if (reason !== "reset") setPersonInputValue(v); }}
-          onChange={(_, v) => setSelectedPersons(v)}
-          renderOption={(props, o) => (
-            <li {...props} key={`${o.tipo_documento}:${o.numero_documento}`}>
-              <Box>
-                <Typography variant="body2">{o.name}</Typography>
-                <Typography variant="caption" sx={{ color: "#888" }}>
-                  Doc: {o.numero_documento} · {o.n_entidades} entidad{o.n_entidades !== 1 ? "es" : ""}
-                </Typography>
-              </Box>
-            </li>
-          )}
-          renderTags={(value, getTagProps) =>
-            value.map((o, i) => (
-              <Chip {...getTagProps({ index: i })} key={`${o.tipo_documento}:${o.numero_documento}`}
-                label={o.name} size="small" sx={{ maxWidth: 160, fontSize: 11 }} />
-            ))
-          }
-          sx={{
-            width: 320, minWidth: 160,
-            "& .MuiOutlinedInput-notchedOutline": { borderColor: "#444" },
-            "& input": { color: "#fff" },
-            "& .MuiChip-root": { bgcolor: "#ff6d0033", color: "#ccc" },
-          }}
-          renderInput={(params) => (
-            <TextField {...params} placeholder={selectedPersons.length === 0 ? "Buscar persona por nombre…" : ""}
-              InputProps={{ ...params.InputProps,
-                endAdornment: (<>
-                  {loadingPersonOptions && <CircularProgress size={14} sx={{ color: "#ff6d00" }} />}
-                  {params.InputProps.endAdornment}
-                </>),
+            {/* Person multi-select autocomplete */}
+            <Autocomplete
+              multiple size="small"
+              options={personOptions}
+              value={selectedPersons}
+              inputValue={personInputValue}
+              loading={loadingPersonOptions}
+              getOptionLabel={(o) => o.name}
+              isOptionEqualToValue={(a, b) => a.tipo_documento === b.tipo_documento && a.numero_documento === b.numero_documento}
+              filterOptions={(x) => x}
+              onInputChange={(_, v, reason) => { if (reason !== "reset") setPersonInputValue(v); }}
+              onChange={(_, v) => setSelectedPersons(v)}
+              renderOption={(props, o) => (
+                <li {...props} key={`${o.tipo_documento}:${o.numero_documento}`}>
+                  <Box>
+                    <Typography variant="body2">{o.name}</Typography>
+                    <Typography variant="caption" sx={{ color: "#888" }}>
+                      Doc: {o.numero_documento} · {o.n_relaciones} relaci{o.n_relaciones !== 1 ? "ones" : "on"}
+                    </Typography>
+                  </Box>
+                </li>
+              )}
+              renderTags={(value, getTagProps) =>
+                value.map((o, i) => (
+                  <Chip {...getTagProps({ index: i })} key={`${o.tipo_documento}:${o.numero_documento}`}
+                    label={o.name} size="small" sx={{ maxWidth: 160, fontSize: 11 }} />
+                ))
+              }
+              sx={{
+                width: 320, minWidth: 160,
+                "& .MuiOutlinedInput-notchedOutline": { borderColor: "#444" },
+                "& input": { color: "#fff" },
+                "& .MuiChip-root": { bgcolor: "#ff6d0033", color: "#ccc" },
               }}
+              renderInput={(params) => (
+                <TextField {...params} placeholder={selectedPersons.length === 0 ? "Buscar persona por nombre…" : ""}
+                  InputProps={{ ...params.InputProps,
+                    endAdornment: (<>
+                      {loadingPersonOptions && <CircularProgress size={14} sx={{ color: "#ff6d00" }} />}
+                      {params.InputProps.endAdornment}
+                    </>),
+                  }}
+                />
+              )}
             />
-          )}
-        />
 
-        {/* Direct search by CUIT or DNI */}        <FormControl size="small" sx={{ minWidth: 90 }}>
-          <InputLabel sx={{ color: "#aaa" }}>Por</InputLabel>
-          <Select value={directType} label="Por"
-            onChange={(e) => setDirectType(e.target.value as DirectSearchType)}
-            sx={{ color: "#fff", "& .MuiOutlinedInput-notchedOutline": { borderColor: "#444" } }}>
-            <MenuItem value="cuit">CUIT</MenuItem>
-            <MenuItem value="dni">DNI</MenuItem>
-          </Select>
-        </FormControl>
-        <TextField size="small"
-          placeholder={directType === "cuit" ? "30710866313" : "12345678"}
-          value={directQuery}
-          onChange={(e) => setDirectQuery(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleDirectSearch()}
-          sx={{ width: 150, "& input": { color: "#fff" },
-                "& .MuiOutlinedInput-notchedOutline": { borderColor: "#444" } }}
-          InputProps={{ endAdornment: (
-            <InputAdornment position="end">
-              <IconButton onClick={handleDirectSearch} size="small" sx={{ color: "#aaa" }}>
-                <SearchIcon fontSize="small" />
-              </IconButton>
-            </InputAdornment>
-          )}}
-        />
+            {/* Direct search by CUIT or DNI */}
+            <FormControl size="small" sx={{ minWidth: 90 }}>
+              <InputLabel sx={{ color: "#aaa" }}>Por</InputLabel>
+              <Select value={directType} label="Por"
+                onChange={(e) => setDirectType(e.target.value as DirectSearchType)}
+                sx={{ color: "#fff", "& .MuiOutlinedInput-notchedOutline": { borderColor: "#444" } }}>
+                <MenuItem value="cuit">CUIT</MenuItem>
+                <MenuItem value="dni">DNI</MenuItem>
+              </Select>
+            </FormControl>
+            <TextField size="small"
+              placeholder={directType === "cuit" ? "30710866313" : "12345678"}
+              value={directQuery}
+              onChange={(e) => setDirectQuery(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleDirectSearch()}
+              sx={{ width: 150, "& input": { color: "#fff" },
+                    "& .MuiOutlinedInput-notchedOutline": { borderColor: "#444" } }}
+              InputProps={{ endAdornment: (
+                <InputAdornment position="end">
+                  <IconButton onClick={handleDirectSearch} size="small" sx={{ color: "#aaa" }}>
+                    <SearchIcon fontSize="small" />
+                  </IconButton>
+                </InputAdornment>
+              )}}
+            />
 
-        <FormControl size="small" sx={{ minWidth: 100 }}>
-          <InputLabel sx={{ color: "#aaa" }}>Profundidad</InputLabel>
-          <Select value={depth} label="Profundidad"
-            onChange={(e) => setDepth(Number(e.target.value))}
-            sx={{ color: "#fff", "& .MuiOutlinedInput-notchedOutline": { borderColor: "#444" } }}>
-            {[1, 2, 3, 4].map((d) => <MenuItem key={d} value={d}>{d}</MenuItem>)}
-          </Select>
-        </FormControl>
+            <FormControl size="small" sx={{ minWidth: 100 }}>
+              <InputLabel sx={{ color: "#aaa" }}>Profundidad</InputLabel>
+              <Select value={depth} label="Profundidad"
+                onChange={(e) => setDepth(Number(e.target.value))}
+                sx={{ color: "#fff", "& .MuiOutlinedInput-notchedOutline": { borderColor: "#444" } }}>
+                {[1, 2, 3, 4].map((d) => <MenuItem key={d} value={d}>{d}</MenuItem>)}
+              </Select>
+            </FormControl>
 
-        <Button variant="outlined" size="small" sx={{ color: "#ddd", borderColor: "#555" }}
-          onClick={clearVisualization}>
-          Borrar visualización
-        </Button>
+            <Button variant="outlined" size="small" sx={{ color: "#ddd", borderColor: "#555" }}
+              onClick={clearVisualization}>
+              Borrar visualización
+            </Button>
+          </>
+        )}
+
+        {mode === "path" && (
+          <>
+            <Autocomplete
+              size="small"
+              options={pathFromOptions}
+              value={pathFromOption}
+              inputValue={pathFromInput}
+              loading={loadingPathFromOptions}
+              onInputChange={(_, value, reason) => { if (reason !== "reset") setPathFromInput(value); }}
+              onChange={(_, value) => {
+                setSelectedPathFrom(value);
+                setPathFromId(value?.id ?? "");
+                setPathFromInput(value?.name ?? "");
+              }}
+              getOptionLabel={(o) => `${o.name} (${o.id})`}
+              isOptionEqualToValue={(a, b) => a.id === b.id}
+              filterOptions={(x) => x}
+              renderOption={(props, o) => (
+                <li {...props} key={o.id}>
+                  <Box>
+                    <Typography variant="body2">{o.name}</Typography>
+                    <Typography variant="caption" sx={{ color: "#888" }}>{o.subtitle}</Typography>
+                  </Box>
+                </li>
+              )}
+              sx={{ width: 260, minWidth: 180,
+                "& .MuiOutlinedInput-notchedOutline": { borderColor: "#444" },
+                "& input": { color: "#fff" },
+                "& .MuiInputLabel-root": { color: "#aaa" },
+              }}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="Desde"
+                  placeholder="Buscar nodo origen"
+                  InputProps={{
+                    ...params.InputProps,
+                    endAdornment: (
+                      <>
+                        {loadingPathFromOptions && <CircularProgress size={14} sx={{ color: "#7c4dff" }} />}
+                        {params.InputProps.endAdornment}
+                      </>
+                    ),
+                  }}
+                />
+              )}
+            />
+            {selectedPathFrom && (
+              <Typography variant="caption" sx={{ color: "#bbb", maxWidth: 320 }}>
+                Desde seleccionado: {selectedPathFrom.name}
+              </Typography>
+            )}
+            <Autocomplete
+              size="small"
+              options={pathToOptions}
+              value={pathToOption}
+              inputValue={pathToInput}
+              loading={loadingPathToOptions}
+              onInputChange={(_, value, reason) => { if (reason !== "reset") setPathToInput(value); }}
+              onChange={(_, value) => {
+                setSelectedPathTo(value);
+                setPathToId(value?.id ?? "");
+                setPathToInput(value?.name ?? "");
+              }}
+              getOptionLabel={(o) => `${o.name} (${o.id})`}
+              isOptionEqualToValue={(a, b) => a.id === b.id}
+              filterOptions={(x) => x}
+              renderOption={(props, o) => (
+                <li {...props} key={o.id}>
+                  <Box>
+                    <Typography variant="body2">{o.name}</Typography>
+                    <Typography variant="caption" sx={{ color: "#888" }}>{o.subtitle}</Typography>
+                  </Box>
+                </li>
+              )}
+              sx={{ width: 260, minWidth: 180,
+                "& .MuiOutlinedInput-notchedOutline": { borderColor: "#444" },
+                "& input": { color: "#fff" },
+                "& .MuiInputLabel-root": { color: "#aaa" },
+              }}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="Hasta"
+                  placeholder="Buscar nodo destino"
+                  InputProps={{
+                    ...params.InputProps,
+                    endAdornment: (
+                      <>
+                        {loadingPathToOptions && <CircularProgress size={14} sx={{ color: "#ff6d00" }} />}
+                        {params.InputProps.endAdornment}
+                      </>
+                    ),
+                  }}
+                />
+              )}
+            />
+            {selectedPathTo && (
+              <Typography variant="caption" sx={{ color: "#bbb", maxWidth: 320 }}>
+                Hasta seleccionado: {selectedPathTo.name}
+              </Typography>
+            )}
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<AltRouteIcon />}
+              onClick={handleShortestPath}
+              disabled={pathLoading || !pathFromId || !pathToId}
+              sx={{ color: "#ddd", borderColor: "#555" }}
+            >
+              Camino mas corto
+            </Button>
+            {pathError && (
+              <Typography variant="caption" sx={{ color: "#ff6d6d" }}>{pathError}</Typography>
+            )}
+          </>
+        )}
 
         {(loading || expanding) && <CircularProgress size={20} sx={{ color: "#7c4dff" }} />}
 
@@ -439,9 +749,16 @@ export default function IgjPage() {
           {selectedNode.cuit && (
             <Typography variant="caption" sx={{ color: "#aaa", display: "block" }}>CUIT: {selectedNode.cuit}</Typography>
           )}
+          <Typography variant="caption" sx={{ color: "#aaa", display: "block" }}>
+            Relaciones: {selectedNodeRelationCount}
+          </Typography>
           <Button size="small" variant="outlined" sx={{ mt: 1, fontSize: 11 }}
             onClick={() => handleNodeExpand(selectedNode)} disabled={expanding}>
             Expandir
+          </Button>
+          <Button size="small" variant="outlined" sx={{ mt: 1, ml: 1, fontSize: 11 }}
+            onClick={() => handleNodeCollapse(selectedNode)} disabled={!canCollapseSelected || expanding}>
+            Contraer
           </Button>
         </Paper>
       )}

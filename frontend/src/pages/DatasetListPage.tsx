@@ -20,6 +20,7 @@ import {
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
 import BubbleChartIcon from "@mui/icons-material/BubbleChart";
+import AltRouteIcon from "@mui/icons-material/AltRoute";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
 import StorageIcon from "@mui/icons-material/Storage";
 import { useNavigate } from "react-router-dom";
@@ -35,6 +36,7 @@ export default function DatasetListPage() {
   const [creating, setCreating] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Dataset | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const displayedDatasets = datasets.filter((ds) => !ds.system && ds.name.trim() !== "IGJ");
 
   const load = () => {
     setLoading(true);
@@ -99,7 +101,7 @@ export default function DatasetListPage() {
 
       {loading ? (
         <Typography color="text.secondary">Cargando…</Typography>
-      ) : datasets.length === 0 ? (
+      ) : displayedDatasets.length === 0 ? (
         <Box display="flex" flexDirection="column" gap={2}>
           <Card variant="outlined" sx={{ borderColor: "primary.main" }}>
             <CardContent sx={{ pb: 1 }}>
@@ -113,8 +115,11 @@ export default function DatasetListPage() {
             </CardContent>
             <Divider />
             <CardActions>
-              <Button size="small" startIcon={<BubbleChartIcon />} onClick={() => navigate("/igj")}>
+              <Button size="small" startIcon={<BubbleChartIcon />} onClick={() => navigate("/igj?mode=explore")}>
                 Explorar grafo
+              </Button>
+              <Button size="small" startIcon={<AltRouteIcon />} onClick={() => navigate("/igj?mode=path")}>
+                Camino mas corto entre nodos
               </Button>
             </CardActions>
           </Card>
@@ -140,13 +145,16 @@ export default function DatasetListPage() {
             </CardContent>
             <Divider />
             <CardActions>
-              <Button size="small" startIcon={<BubbleChartIcon />} onClick={() => navigate("/igj")}>
+              <Button size="small" startIcon={<BubbleChartIcon />} onClick={() => navigate("/igj?mode=explore")}>
                 Explorar grafo
+              </Button>
+              <Button size="small" startIcon={<AltRouteIcon />} onClick={() => navigate("/igj?mode=path")}>
+                Camino mas corto entre nodos
               </Button>
             </CardActions>
           </Card>
 
-          {datasets.map((ds) => (
+          {displayedDatasets.map((ds) => (
             <Card key={ds.id} variant="outlined">
               <CardContent sx={{ pb: 1 }}>
                 <Box display="flex" alignItems="center" gap={1} flexWrap="wrap">

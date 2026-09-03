@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Chip,
@@ -25,7 +26,7 @@ import AltRouteIcon from "@mui/icons-material/AltRoute";
 import UndoIcon from "@mui/icons-material/Undo";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
 import DownloadIcon from "@mui/icons-material/Download";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { datasetsApi, graphApi } from "../api/client";
 import type { GraphData, GraphNode } from "../types";
 import GraphView, { type GraphViewHandle } from "../components/GraphView";
@@ -37,6 +38,7 @@ const PALETTE = [
 
 const DRAWER_WIDTH = 300;
 type SearchField = "name" | "cuit" | "actividad";
+type ExpansionDelta = { nodeId: string; addedNodeIds: string[]; addedEdgeIds: string[] };
 
 function mergeGraphData(base: GraphData, incoming: GraphData): GraphData {
   const nodeIds = new Set(base.nodes.map((n) => n.id));
@@ -50,6 +52,8 @@ function mergeGraphData(base: GraphData, incoming: GraphData): GraphData {
 export default function GraphPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const mode = searchParams.get("mode") === "path" ? "path" : "explore";
 
   const [isSystem, setIsSystem] = useState<boolean | null>(null);
   const [graphData, setGraphData] = useState<GraphData | null>(null);
@@ -76,10 +80,11 @@ export default function GraphPage() {
 
   // Expand state
   const [expanding, setExpanding] = useState(false);
+  const [expansionDeltas, setExpansionDeltas] = useState<ExpansionDelta[]>([]);
 
   // Shortest path state
-  const [pathFrom, setPathFrom] = useState("");
-  const [pathTo, setPathTo] = useState("");
+  const [pathFromId, setPathFromId] = useState("");
+  const [pathToId, setPathToId] = useState("");
   const [pathLoading, setPathLoading] = useState(false);
   const [pathError, setPathError] = useState<string | null>(null);
 
@@ -96,6 +101,19 @@ export default function GraphPage() {
     [availableEdgeTypes]
   );
 
+  const pathNodeOptions = useMemo(
+    () => [...(graphData?.nodes ?? [])].sort((a, b) => a.name.localeCompare(b.name)),
+    [graphData]
+  );
+  const pathFromOption = useMemo(
+    () => pathNodeOptions.find((n) => n.id === pathFromId) ?? null,
+    [pathNodeOptions, pathFromId]
+  );
+  const pathToOption = useMemo(
+    () => pathNodeOptions.find((n) => n.id === pathToId) ?? null,
+    [pathNodeOptions, pathToId]
+  );
+
   // filteredData: seed nodes always shown; neighbor nodes only shown if connected by a visible edge
   const filteredData = useMemo((): GraphData | null => {
     if (!graphData) return null;
@@ -103,10 +121,17 @@ export default function GraphPage() {
     const visibleEdges = graphData.edges.filter((e) => !deselectedEdgeTypes.includes(e.type));
     const connectedIds = new Set(visibleEdges.flatMap((e) => [e.source, e.target]));
     return {
-      nodes: graphData.nodes.filter((n) => seedNodeIds.has(n.id) || connectedIds.has(n.id)),
+      nodes: graphData.nodes.filter((n) => connectedIds.has(n.id)),
       edges: visibleEdges,
     };
-  }, [graphData, deselectedEdgeTypes, seedNodeIds]);
+  }, [graphData, deselectedEdgeTypes]);
+
+  const selectedNodeRelationCount = useMemo(() => {
+    if (!selectedNode || !graphData) return 0;
+    return graphData.edges.filter(
+      (e) => e.source === selectedNode.id || e.target === selectedNode.id
+    ).length;
+  }, [graphData, selectedNode]);
 
   useEffect(() => {
     if (!id) return;
@@ -130,6 +155,7 @@ export default function GraphPage() {
     if (isSystem) {
       if (!debouncedSearch.trim()) {
         setGraphData({ nodes: [], edges: [] });
+        setExpansionDeltas([]);
         setLoading(false);
         return;
       }
@@ -152,6 +178,7 @@ export default function GraphPage() {
             return [...prev, { label, nodeIds }];
           });
           setGraphData((prev) => prev ? mergeGraphData(prev, data) : data);
+          setExpansionDeltas([]);
         })
         .catch(() => setError("Error al buscar en el grafo"))
         .finally(() => setLoading(false));
@@ -166,6 +193,7 @@ export default function GraphPage() {
         .then((data) => {
           setGraphData(data);
           setSearches([{ label: "", nodeIds: data.nodes.map((n) => n.id) }]);
+          setExpansionDeltas([]);
         })
         .catch(() => setError("Error al cargar el grafo"))
         .finally(() => setLoading(false));
@@ -187,10 +215,14 @@ export default function GraphPage() {
     setGraphData({ nodes: [], edges: [] });
     setSearches([]);
     setHistory([]);
+    setExpansionDeltas([]);
     setSelectedNode(null);
     setDeselectedEdgeTypes([]);
     setSearch("");
     setDebouncedSearch("");
+    setPathFromId("");
+    setPathToId("");
+    setPathError(null);
   };
 
   const handleRemoveSearch = (idx: number) => {
@@ -218,6 +250,7 @@ export default function GraphPage() {
       }
       return { nodes, edges };
     });
+    setExpansionDeltas([]);
   };
 
   const toggleRelType = (t: string) => {
@@ -230,21 +263,77 @@ export default function GraphPage() {
     if (!id || !selectedNode || !graphData) return;
     setHistory((h) => [...h, graphData]);
     setExpanding(true);
+    const selectedId = selectedNode.id;
     const activeEdgeTypes = availableEdgeTypes.filter((t) => !deselectedEdgeTypes.includes(t));
     const relFilter = deselectedEdgeTypes.length > 0 ? activeEdgeTypes : undefined;
     graphApi
-      .expand(id, selectedNode.id, relFilter)
+      .expand(id, selectedId, relFilter)
       .then((incoming) => {
-        setGraphData((prev) => mergeGraphData(prev ?? { nodes: [], edges: [] }, incoming));
+        const directEdges = incoming.edges.filter(
+          (e) => e.source === selectedId || e.target === selectedId
+        );
+        const directNodeIds = new Set<string>([selectedId]);
+        directEdges.forEach((e) => {
+          directNodeIds.add(e.source);
+          directNodeIds.add(e.target);
+        });
+        const directNodes = incoming.nodes.filter((n) => directNodeIds.has(n.id));
+        const directData: GraphData = { nodes: directNodes, edges: directEdges };
+
+        const prevNodeIds = new Set(graphData.nodes.map((n) => n.id));
+        const prevEdgeIds = new Set(graphData.edges.map((e) => e.id));
+        const addedNodeIds = directNodes.map((n) => n.id).filter((nid) => !prevNodeIds.has(nid));
+        const addedEdgeIds = directEdges.map((e) => e.id).filter((eid) => !prevEdgeIds.has(eid));
+
+        setGraphData((prev) => mergeGraphData(prev ?? { nodes: [], edges: [] }, directData));
+        if (addedNodeIds.length > 0 || addedEdgeIds.length > 0) {
+          setExpansionDeltas((prev) => [...prev, { nodeId: selectedId, addedNodeIds, addedEdgeIds }]);
+        }
       })
       .catch(() => setError("Error al expandir el nodo"))
       .finally(() => setExpanding(false));
+  };
+
+  const handleCollapseSelectedNode = () => {
+    if (!selectedNode || !graphData || expansionDeltas.length === 0) return;
+
+    let idx = -1;
+    for (let i = expansionDeltas.length - 1; i >= 0; i -= 1) {
+      if (expansionDeltas[i].nodeId === selectedNode.id) {
+        idx = i;
+        break;
+      }
+    }
+    if (idx < 0) return;
+
+    const target = expansionDeltas[idx];
+    const remaining = expansionDeltas.filter((_, i) => i !== idx);
+
+    const preservedNodes = new Set<string>(seedNodeIds);
+    const preservedEdges = new Set<string>();
+    remaining.forEach((r) => {
+      r.addedNodeIds.forEach((nid) => preservedNodes.add(nid));
+      r.addedEdgeIds.forEach((eid) => preservedEdges.add(eid));
+    });
+
+    const removeNodeIds = new Set(target.addedNodeIds.filter((nid) => !preservedNodes.has(nid)));
+    const removeEdgeIds = new Set(target.addedEdgeIds.filter((eid) => !preservedEdges.has(eid)));
+
+    setGraphData((prev) => {
+      if (!prev) return prev;
+      return {
+        nodes: prev.nodes.filter((n) => !removeNodeIds.has(n.id)),
+        edges: prev.edges.filter((e) => !removeEdgeIds.has(e.id)),
+      };
+    });
+    setExpansionDeltas(remaining);
   };
 
   const handleUndo = () => {
     setHistory((h) => {
       if (h.length === 0) return h;
       setGraphData(h[h.length - 1]);
+      setExpansionDeltas([]);
       return h.slice(0, -1);
     });
   };
@@ -258,21 +347,23 @@ export default function GraphPage() {
           }
         : prev
     );
+      setExpansionDeltas([]);
     if (selectedNode?.id === nodeId) setSelectedNode(null);
   };
 
   const handlePathSearch = () => {
-    if (!id || !pathFrom.trim() || !pathTo.trim()) return;
+    if (!id || !pathFromId || !pathToId) return;
     if (graphData && graphData.nodes.length > 0) setHistory((h) => [...h, graphData]);
     setPathLoading(true);
     setPathError(null);
     graphApi
-      .path(id, pathFrom.trim(), pathTo.trim())
+      .path(id, pathFromId, pathToId)
       .then((data) => {
         if (data.nodes.length === 0) {
           setPathError("No se encontró un camino entre los dos nodos.");
         } else {
           setGraphData(data);
+          setExpansionDeltas([]);
         }
       })
       .catch(() => setPathError("Error al buscar el camino."))
@@ -281,6 +372,7 @@ export default function GraphPage() {
 
   const isEmpty = graphData?.nodes.length === 0;
   const showSearchPrompt = isSystem && isEmpty && !debouncedSearch && !loading;
+  const canCollapseSelected = !!selectedNode && expansionDeltas.some((d) => d.nodeId === selectedNode.id);
   return (
     <Box display="flex" height="100vh" overflow="hidden">
       {/* Sidebar */}
@@ -430,6 +522,12 @@ export default function GraphPage() {
 
         <Divider />
 
+        {mode === "path" && (
+          <Alert severity="info" sx={{ py: 0 }}>
+            Modo: Camino mas corto entre nodos
+          </Alert>
+        )}
+
         {graphData && graphData.nodes.length > 0 && (
           <Typography variant="caption" color="text.secondary">
             {(filteredData ?? graphData).nodes.length} nodos · {(filteredData ?? graphData).edges.length} aristas visibles
@@ -468,6 +566,9 @@ export default function GraphPage() {
                 Actividad: {selectedNode.actividad_descripcion}
               </Typography>
             )}
+            <Typography variant="caption" display="block" color="text.secondary" mt={0.5}>
+              Relaciones: {selectedNodeRelationCount}
+            </Typography>
             <Box display="flex" gap={1} mt={1} flexWrap="wrap">
               <Button
                 size="small"
@@ -479,6 +580,9 @@ export default function GraphPage() {
               >
                 Expandir vecinos
               </Button>
+              <Button size="small" variant="outlined" onClick={handleCollapseSelectedNode} disabled={!canCollapseSelected || expanding}>
+                Contraer nodo
+              </Button>
               <Button size="small" onClick={() => setSelectedNode(null)}>
                 Deseleccionar
               </Button>
@@ -486,39 +590,47 @@ export default function GraphPage() {
           </Box>
         )}
 
-        {/* Camino más corto (solo dataset sistema) */}
-        {isSystem && (
-          <>
-            <Divider />
-            <Typography variant="subtitle2" fontWeight={700} display="flex" alignItems="center" gap={0.5}>
-              <AltRouteIcon fontSize="small" /> Camino más corto
-            </Typography>
-            <TextField
-              size="small"
-              label="Desde (node_id / CUIT / DNI)"
-              value={pathFrom}
-              onChange={(e) => setPathFrom(e.target.value)}
-            />
-            <TextField
-              size="small"
-              label="Hasta (node_id / CUIT / DNI)"
-              value={pathTo}
-              onChange={(e) => setPathTo(e.target.value)}
-            />
-            {pathError && (
-              <Typography variant="caption" color="error">{pathError}</Typography>
+        {/* Camino más corto */}
+        <>
+          <Divider />
+          <Typography variant="subtitle2" fontWeight={700} display="flex" alignItems="center" gap={0.5}>
+            <AltRouteIcon fontSize="small" /> Camino más corto
+          </Typography>
+          <Autocomplete
+            size="small"
+            options={pathNodeOptions}
+            value={pathFromOption}
+            onChange={(_, value) => setPathFromId(value?.id ?? "")}
+            getOptionLabel={(o) => `${o.name} (${o.id})`}
+            isOptionEqualToValue={(a, b) => a.id === b.id}
+            renderInput={(params) => (
+              <TextField {...params} label="Desde" placeholder="Seleccioná nodo origen" />
             )}
-            <Button
-              size="small"
-              variant="outlined"
-              disabled={pathLoading || !pathFrom.trim() || !pathTo.trim()}
-              startIcon={pathLoading ? <CircularProgress size={14} /> : undefined}
-              onClick={handlePathSearch}
-            >
-              Buscar camino
-            </Button>
-          </>
-        )}
+          />
+          <Autocomplete
+            size="small"
+            options={pathNodeOptions}
+            value={pathToOption}
+            onChange={(_, value) => setPathToId(value?.id ?? "")}
+            getOptionLabel={(o) => `${o.name} (${o.id})`}
+            isOptionEqualToValue={(a, b) => a.id === b.id}
+            renderInput={(params) => (
+              <TextField {...params} label="Hasta" placeholder="Seleccioná nodo destino" />
+            )}
+          />
+          {pathError && (
+            <Typography variant="caption" color="error">{pathError}</Typography>
+          )}
+          <Button
+            size="small"
+            variant="outlined"
+            disabled={pathLoading || !pathFromId || !pathToId}
+            startIcon={pathLoading ? <CircularProgress size={14} /> : undefined}
+            onClick={handlePathSearch}
+          >
+            Buscar camino
+          </Button>
+        </>
       </Paper>
 
       {/* Área del grafo */}
