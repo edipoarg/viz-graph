@@ -130,10 +130,12 @@ const GraphView = forwardRef<GraphViewHandle, Props>(function GraphView(
 
     // Save positions and viewport from previous instance before destroying
     let prevViewport: { zoom: number; pan: { x: number; y: number } } | null = null;
+    let prevBounds: { x1: number; y1: number; x2: number; y2: number; w: number; h: number } | null = null;
     if (cyRef.current) {
       cyRef.current.nodes().forEach((n) => {
         saved[n.id()] = { ...n.position() };
       });
+      prevBounds = cyRef.current.nodes().boundingBox();
       prevViewport = { zoom: cyRef.current.zoom(), pan: { ...cyRef.current.pan() } };
       cyRef.current.destroy();
       cyRef.current = null;
@@ -200,7 +202,7 @@ const GraphView = forwardRef<GraphViewHandle, Props>(function GraphView(
       const anchor = saved[anchorId] ?? { x: 400, y: 300 };
       const existingPositions = Object.values(saved);
       const minSpacing = 50;
-      const bounds = cyRef.current?.nodes().boundingBox() ?? { x1: 0, y1: 0, x2: 800, y2: 600, w: 800, h: 600 };
+      const bounds = prevBounds ?? { x1: 0, y1: 0, x2: 800, y2: 600, w: 800, h: 600 };
       const farBaseX = bounds.x2 + Math.max(260, bounds.w * 0.35);
       const farBaseY = bounds.y2 + Math.max(220, bounds.h * 0.25);
       let disconnectedIndex = 0;
