@@ -20,6 +20,7 @@ import {
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
 import BubbleChartIcon from "@mui/icons-material/BubbleChart";
+import AltRouteIcon from "@mui/icons-material/AltRoute";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
 import StorageIcon from "@mui/icons-material/Storage";
 import { useNavigate } from "react-router-dom";
@@ -35,6 +36,7 @@ export default function DatasetListPage() {
   const [creating, setCreating] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Dataset | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const displayedDatasets = datasets.filter((ds) => !ds.system && ds.name.trim() !== "IGJ");
 
   const load = () => {
     setLoading(true);
@@ -99,16 +101,60 @@ export default function DatasetListPage() {
 
       {loading ? (
         <Typography color="text.secondary">Cargando…</Typography>
-      ) : datasets.length === 0 ? (
-        <Box textAlign="center" mt={8}>
-          <UploadFileIcon sx={{ fontSize: 64, color: "text.disabled" }} />
-          <Typography color="text.secondary" mt={1}>
-            Todavía no hay datasets. Creá uno para empezar.
-          </Typography>
+      ) : displayedDatasets.length === 0 ? (
+        <Box display="flex" flexDirection="column" gap={2}>
+          <Card variant="outlined" sx={{ borderColor: "primary.main" }}>
+            <CardContent sx={{ pb: 1 }}>
+              <Box display="flex" alignItems="center" gap={1}>
+                <Typography variant="h6" fontWeight={600}>IGJ — Datos Societarios</Typography>
+                <Chip icon={<StorageIcon />} label="Sistema" size="small" color="primary" variant="filled" />
+              </Box>
+              <Typography variant="caption" color="text.secondary">
+                Entidades y autoridades registradas en IGJ · búsqueda on-the-fly
+              </Typography>
+            </CardContent>
+            <Divider />
+            <CardActions>
+              <Button size="small" startIcon={<BubbleChartIcon />} onClick={() => navigate("/igj?mode=explore")}>
+                Explorar grafo
+              </Button>
+              <Button size="small" startIcon={<AltRouteIcon />} onClick={() => navigate("/igj?mode=path")}>
+                Camino mas corto entre nodos
+              </Button>
+            </CardActions>
+          </Card>
+          <Box textAlign="center" mt={4}>
+            <UploadFileIcon sx={{ fontSize: 64, color: "text.disabled" }} />
+            <Typography color="text.secondary" mt={1}>
+              Todavía no hay datasets. Creá uno para empezar.
+            </Typography>
+          </Box>
         </Box>
       ) : (
         <Box display="flex" flexDirection="column" gap={2}>
-          {datasets.map((ds) => (
+          {/* Fixed IGJ card */}
+          <Card variant="outlined" sx={{ borderColor: "primary.main" }}>
+            <CardContent sx={{ pb: 1 }}>
+              <Box display="flex" alignItems="center" gap={1}>
+                <Typography variant="h6" fontWeight={600}>IGJ — Datos Societarios</Typography>
+                <Chip icon={<StorageIcon />} label="Sistema" size="small" color="primary" variant="filled" />
+              </Box>
+              <Typography variant="caption" color="text.secondary">
+                Entidades y autoridades registradas en IGJ · búsqueda on-the-fly
+              </Typography>
+            </CardContent>
+            <Divider />
+            <CardActions>
+              <Button size="small" startIcon={<BubbleChartIcon />} onClick={() => navigate("/igj?mode=explore")}>
+                Explorar grafo
+              </Button>
+              <Button size="small" startIcon={<AltRouteIcon />} onClick={() => navigate("/igj?mode=path")}>
+                Camino mas corto entre nodos
+              </Button>
+            </CardActions>
+          </Card>
+
+          {displayedDatasets.map((ds) => (
             <Card key={ds.id} variant="outlined">
               <CardContent sx={{ pb: 1 }}>
                 <Box display="flex" alignItems="center" gap={1} flexWrap="wrap">

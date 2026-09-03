@@ -121,3 +121,49 @@ export const graphApi = {
       .get<GraphData>(`/datasets/${id}/path`, { params: { from_id: fromId, to_id: toId } })
       .then((r) => r.data),
 };
+
+export interface IgjEntityOption {
+  correlativo: string;
+  name: string;
+  cuit: string | null;
+  tipo: string;
+  n_relaciones: number;
+}
+
+export interface IgjPersonOption {
+  tipo_documento: string;
+  numero_documento: string;
+  name: string;
+  n_entidades: number;
+  n_relaciones: number;
+}
+
+export const igjApi = {
+  search: (q: string) =>
+    api.get<IgjEntityOption[]>("/igj/search", { params: { q } }).then((r) => r.data),
+  searchPersonas: (q: string) =>
+    api.get<IgjPersonOption[]>("/igj/search", { params: { q, tipo: "persona" } }).then((r) => r.data),
+  path: (fromNode: string, toNode: string) =>
+    api
+      .get<GraphData>("/igj/path", { params: { from_node: fromNode, to_node: toNode } })
+      .then((r) => r.data),
+  expand: (params: {
+    correlativos?: string[];
+    personas?: string[];  // "tipo_doc:num_doc" pairs
+    cuit?: string;
+    razon_social?: string;
+    dni?: string;
+    depth?: number;
+  }) =>
+    api.get<GraphData>("/igj/expand", {
+      params: {
+        ...(params.correlativos?.length ? { correlativo: params.correlativos } : {}),
+        ...(params.personas?.length ? { persona: params.personas } : {}),
+        ...(params.cuit ? { cuit: params.cuit } : {}),
+        ...(params.razon_social ? { razon_social: params.razon_social } : {}),
+        ...(params.dni ? { dni: params.dni } : {}),
+        ...(params.depth !== undefined ? { depth: params.depth } : {}),
+      },
+      paramsSerializer: { indexes: null },
+    }).then((r) => r.data),
+};

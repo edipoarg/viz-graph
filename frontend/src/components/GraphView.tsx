@@ -12,6 +12,7 @@ interface Props {
   selectedNodeId: string | null;
   onHideNode: (nodeId: string) => void;
   relColorMap: Record<string, string>;
+  rootNodeIds?: Set<string>;
 }
 
 
@@ -29,14 +30,23 @@ function nodeSize(id: string, deg: Record<string, number>, maxDeg: number): numb
   return 15 + 65 * Math.sqrt((d - 1) / Math.max(1, maxDeg - 1));
 }
 
+function elasticFactor(nodeId: string, min = 0.32, span = 0.36): number {
+  // Deterministic per-node factor so drag feel is stable between renders.
+  let hash = 0;
+  for (let i = 0; i < nodeId.length; i += 1) {
+    hash = (hash * 31 + nodeId.charCodeAt(i)) >>> 0;
+  }
+  return min + ((hash % 1000) / 1000) * span;
+}
+
 const LAYOUT_OPTS = {
   name: "cose",
   animate: false,
-  nodeRepulsion: () => 120000,
-  idealEdgeLength: () => 250,
-  gravity: 0.05,
-  numIter: 800,
-  coolingFactor: 0.95,
+  nodeRepulsion: () => 7000,
+  idealEdgeLength: () => 45,
+  gravity: 0.35,
+  numIter: 450,
+  coolingFactor: 0.98,
   minTemp: 1.0,
 };
 
@@ -57,6 +67,7 @@ const STYLES: cytoscape.StylesheetStyle[] = [
       "border-color": "#1e1e2e",
       "text-wrap": "wrap",
       "text-max-width": "120px",
+      "min-zoomed-font-size": 6,
       "text-background-color": "#1e1e2e",
       "text-background-opacity": 0.7,
       "text-background-padding": "3px",
@@ -64,10 +75,16 @@ const STYLES: cytoscape.StylesheetStyle[] = [
     },
   },
   { selector: "node[tipo = 'Sociedad']", style: { "background-color": "#7c4dff" } },
-  { selector: "node[tipo = 'Persona']",  style: { "background-color": "#ff6d00" } },
+  { selector: "node[tipo = 'PERSONA']",  style: { "background-color": "#ff6d00" } },
   { selector: "node[tipo = ''][role = 'source']", style: { "background-color": "#7c4dff" } },
   { selector: "node[tipo = ''][role = 'target']", style: { "background-color": "#e91e63" } },
   { selector: "node[tipo = ''][role = 'both']",   style: { "background-color": "#ff6d00" } },
+  { selector: "node[isSeed = 'true']", style: {
+      "border-width": 4,
+      "border-color": "#f9d976",
+      "font-size": "11px",
+      "font-weight": "bold",
+    } },
   { selector: "node:selected", style: { "background-color": "#03dac6", "border-color": "#ffffff", "border-width": 3 } },
   {
     selector: "edge",
@@ -89,7 +106,7 @@ const STYLES: cytoscape.StylesheetStyle[] = [
 ];
 
 const GraphView = forwardRef<GraphViewHandle, Props>(function GraphView(
-  { data, onNodeSelect, selectedNodeId, onHideNode, relColorMap },
+  { data, onNodeSelect, selectedNodeId, onHideNode, relColorMap, rootNodeIds = new Set() },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -111,11 +128,13 @@ const GraphView = forwardRef<GraphViewHandle, Props>(function GraphView(
 
     const saved = positionsRef.current;
 
-    // Save positions from previous instance before destroying
+    // Save positions and viewport from previous instance before destroying
+    let prevViewport: { zoom: number; pan: { x: number; y: number } } | null = null;
     if (cyRef.current) {
       cyRef.current.nodes().forEach((n) => {
         saved[n.id()] = { ...n.position() };
       });
+      prevViewport = { zoom: cyRef.current.zoom(), pan: { ...cyRef.current.pan() } };
       cyRef.current.destroy();
       cyRef.current = null;
     }
@@ -129,31 +148,121 @@ const GraphView = forwardRef<GraphViewHandle, Props>(function GraphView(
     // For fresh search, clear stale positions
     if (!hasOverlap) positionsRef.current = {};
 
-    // Pre-position new nodes around the selected anchor
+    // Pre-position new nodes.
+    // If they connect to existing visible nodes, place them near the selected anchor.
+    // If they form a disconnected component, place that component far from current graph bounds.
     const newNodes = data.nodes.filter((n) => !saved[n.id]);
     if (hasOverlap && newNodes.length > 0) {
+      const existingIds = new Set(data.nodes.filter((n) => !!saved[n.id]).map((n) => n.id));
+      const newNodeIds = new Set(newNodes.map((n) => n.id));
+      const adjacency = new Map<string, Set<string>>();
+      newNodes.forEach((n) => adjacency.set(n.id, new Set()));
+
+      data.edges.forEach((e) => {
+        if (newNodeIds.has(e.source) && newNodeIds.has(e.target)) {
+          adjacency.get(e.source)?.add(e.target);
+          adjacency.get(e.target)?.add(e.source);
+        }
+      });
+
+      const linkedToExisting = new Set<string>();
+      data.edges.forEach((e) => {
+        if (newNodeIds.has(e.source) && existingIds.has(e.target)) linkedToExisting.add(e.source);
+        if (newNodeIds.has(e.target) && existingIds.has(e.source)) linkedToExisting.add(e.target);
+      });
+
+      const components: Array<{ ids: string[]; linked: boolean }> = [];
+      const seen = new Set<string>();
+      newNodes.forEach((n) => {
+        if (seen.has(n.id)) return;
+        const stack = [n.id];
+        const ids: string[] = [];
+        let linked = false;
+
+        while (stack.length > 0) {
+          const curId = stack.pop();
+          if (!curId || seen.has(curId)) continue;
+          seen.add(curId);
+          ids.push(curId);
+          if (linkedToExisting.has(curId)) linked = true;
+
+          const neighbors = adjacency.get(curId);
+          if (!neighbors) continue;
+          neighbors.forEach((nb) => {
+            if (!seen.has(nb)) stack.push(nb);
+          });
+        }
+
+        components.push({ ids, linked });
+      });
+
       const anchorId = selectedNodeIdRef.current ?? "";
       const anchor = saved[anchorId] ?? { x: 400, y: 300 };
-      const R = Math.max(200, newNodes.length * 15);
-      newNodes.forEach((n, i) => {
-        saved[n.id] = {
-          x: anchor.x + R * Math.cos((2 * Math.PI * i) / newNodes.length),
-          y: anchor.y + R * Math.sin((2 * Math.PI * i) / newNodes.length),
-        };
+      const existingPositions = Object.values(saved);
+      const minSpacing = 50;
+      const bounds = cyRef.current?.nodes().boundingBox() ?? { x1: 0, y1: 0, x2: 800, y2: 600, w: 800, h: 600 };
+      const farBaseX = bounds.x2 + Math.max(260, bounds.w * 0.35);
+      const farBaseY = bounds.y2 + Math.max(220, bounds.h * 0.25);
+      let disconnectedIndex = 0;
+
+      components.forEach((component) => {
+        const compNodes = component.ids;
+        const componentAnchor = component.linked
+          ? anchor
+          : {
+              x: farBaseX + (disconnectedIndex % 3) * 260,
+              y: farBaseY + Math.floor(disconnectedIndex / 3) * 220,
+            };
+        if (!component.linked) disconnectedIndex += 1;
+
+        compNodes.forEach((nodeId, i) => {
+          let angle = (2 * Math.PI * i) / Math.max(1, compNodes.length);
+          let radius = 70 + i * 14;
+          let placed = false;
+
+          for (let attempt = 0; attempt < 30 && !placed; attempt += 1) {
+            const candidate = {
+              x: componentAnchor.x + radius * Math.cos(angle),
+              y: componentAnchor.y + radius * Math.sin(angle),
+            };
+            const overlaps = existingPositions.some((p) => Math.hypot(p.x - candidate.x, p.y - candidate.y) < minSpacing);
+            if (!overlaps) {
+              saved[nodeId] = candidate;
+              existingPositions.push(candidate);
+              placed = true;
+            } else {
+              angle += (Math.PI / 12) + (attempt * 0.06);
+              radius += 16;
+            }
+          }
+
+          if (!placed) {
+            saved[nodeId] = {
+              x: componentAnchor.x + 80 + i * 35,
+              y: componentAnchor.y + 70 * Math.sin(i + 1),
+            };
+            existingPositions.push(saved[nodeId]);
+          }
+        });
       });
     }
 
     const cy = cytoscape({
       container: containerRef.current,
       elements: [
-        ...data.nodes.map((n) => ({
-          data: {
-            id: n.id, label: n.name, role: n.role ?? "both",
-            tipo: n.tipo ?? "", cuit: n.cuit ?? "", actividad: n.actividad_descripcion ?? "",
-            degree: deg[n.id] ?? 0, size: nodeSize(n.id, deg, maxDeg),
-          },
-          ...(hasOverlap && saved[n.id] ? { position: saved[n.id] } : {}),
-        })),
+        ...data.nodes.map((n) => {
+          const isSeed = rootNodeIds.has(n.id);
+          return {
+            data: {
+              id: n.id, label: n.name, role: n.role ?? "both",
+              tipo: n.tipo ?? "", cuit: n.cuit ?? "", actividad: n.actividad_descripcion ?? "",
+              degree: deg[n.id] ?? 0,
+              size: nodeSize(n.id, deg, maxDeg) * (isSeed ? 1.35 : 1),
+              isSeed: isSeed ? "true" : "false",
+            },
+            ...(hasOverlap && saved[n.id] ? { position: saved[n.id] } : {}),
+          };
+        }),
         ...data.edges.map((e) => ({
           data: {
             id: e.id, source: e.source, target: e.target,
@@ -168,45 +277,93 @@ const GraphView = forwardRef<GraphViewHandle, Props>(function GraphView(
           ? LAYOUT_OPTS
           : { name: "circle", animate: false, padding: 60 },
       style: STYLES,
-      minZoom: 0.1,
+      minZoom: 0.05,
       maxZoom: 5,
       wheelSensitivity: 0.3,
+      pixelRatio: window.devicePixelRatio ?? 1,
+      boxSelectionEnabled: true,
     });
 
     // Save positions after layout completes
     cy.nodes().forEach((n) => { positionsRef.current[n.id()] = { ...n.position() }; });
 
-    // Fit viewport when new nodes were added (expansion)
-    if (hasOverlap && newNodes.length > 0) cy.fit(undefined, 40);
+    // Fit all nodes into view after a fresh search
+    if (!hasOverlap) {
+      cy.fit(undefined, 50);
+      if (cy.zoom() < 0.22) cy.zoom(0.22);
+    }
 
-    // ── Drag neighbors ────────────────────────────────────────────────────
+    // Restore viewport on expansion so zoom level is preserved and we do not zoom out unexpectedly.
+    if (hasOverlap && prevViewport) {
+      cy.zoom(prevViewport.zoom);
+      cy.pan(prevViewport.pan);
+    }
+
+    // If the graph shrank because a relation filter was removed, compact the viewport so it stays visible.
+    if (hasOverlap && newNodes.length === 0) {
+      cy.fit(undefined, 45);
+    }
+
+    // ── Drag with elastic neighborhood response ──────────────────────────
     let dragStartPos: { x: number; y: number } | null = null;
-    const neighborStartPos = new Map<string, { x: number; y: number }>();
+    let dragNodeId: string | null = null;
+    const firstHopStartPos = new Map<string, { x: number; y: number }>();
+    const secondHopStartPos = new Map<string, { x: number; y: number }>();
 
     cy.on("grabon", "node", (e) => {
       const node = e.target as NodeSingular;
+      dragNodeId = node.id();
       dragStartPos = { ...node.position() };
-      neighborStartPos.clear();
+      firstHopStartPos.clear();
+      secondHopStartPos.clear();
+
+      const firstHopIds = new Set<string>();
       node.neighborhood("node").forEach((nb: NodeSingular) => {
-        neighborStartPos.set(nb.id(), { ...nb.position() });
+        firstHopIds.add(nb.id());
+        firstHopStartPos.set(nb.id(), { ...nb.position() });
+      });
+
+      firstHopIds.forEach((nid) => {
+        const n1 = cy.getElementById(nid);
+        n1.neighborhood("node").forEach((n2: NodeSingular) => {
+          const n2id = n2.id();
+          if (n2id === dragNodeId || firstHopIds.has(n2id)) return;
+          if (!secondHopStartPos.has(n2id)) {
+            secondHopStartPos.set(n2id, { ...n2.position() });
+          }
+        });
       });
     });
+
     cy.on("drag", "node", (e) => {
-      if (!dragStartPos) return;
+      if (!dragStartPos || !dragNodeId) return;
       const node = e.target as NodeSingular;
       const cur = node.position();
       const dx = cur.x - dragStartPos.x;
       const dy = cur.y - dragStartPos.y;
-      node.neighborhood("node").forEach((nb: NodeSingular) => {
-        const sp = neighborStartPos.get(nb.id());
-        if (sp && !nb.grabbed()) nb.position({ x: sp.x + dx * 0.85, y: sp.y + dy * 0.85 });
+
+      firstHopStartPos.forEach((sp, nid) => {
+        const nb = cy.getElementById(nid);
+        if (nb.empty() || nb.grabbed()) return;
+        const k = elasticFactor(nid, 0.38, 0.34);
+        nb.position({ x: sp.x + dx * k, y: sp.y + dy * k });
+      });
+
+      secondHopStartPos.forEach((sp, nid) => {
+        const nb = cy.getElementById(nid);
+        if (nb.empty() || nb.grabbed()) return;
+        const k = elasticFactor(nid, 0.10, 0.14);
+        nb.position({ x: sp.x + dx * k, y: sp.y + dy * k });
       });
     });
+
     cy.on("free", "node", () => {
       // Persist updated positions after drag
       cy.nodes().forEach((n) => { positionsRef.current[n.id()] = { ...n.position() }; });
       dragStartPos = null;
-      neighborStartPos.clear();
+      dragNodeId = null;
+      firstHopStartPos.clear();
+      secondHopStartPos.clear();
     });
 
     // ── X button on hover ─────────────────────────────────────────────────
@@ -233,6 +390,15 @@ const GraphView = forwardRef<GraphViewHandle, Props>(function GraphView(
       });
     });
     cy.on("tap", (e) => { if (e.target === cy) onNodeSelectRef.current(null); });
+
+    // Box-select: zoom viewport to the selected region then deselect
+    cy.on("boxend", () => {
+      const sel = cy.$(":selected");
+      if (sel.length > 0) {
+        cy.fit(sel, 60);
+        sel.unselect();
+      }
+    });
 
     cyRef.current = cy;
     return () => {
@@ -271,6 +437,34 @@ const GraphView = forwardRef<GraphViewHandle, Props>(function GraphView(
         ref={containerRef}
         style={{ width: "100%", height: "100%", background: "#0d0d1a", borderRadius: 10 }}
       />
+
+      {/* Zoom controls */}
+      <div style={{
+        position: "absolute", bottom: 16, right: 16, zIndex: 50,
+        display: "flex", flexDirection: "column", gap: 4,
+      }}>
+        {(["⊕", "⊖", "⊡"] as const).map((icon, i) => (
+          <button
+            key={icon}
+            title={["Acercar", "Alejar", "Ajustar todo"][i]}
+            onClick={() => {
+              const cy = cyRef.current;
+              if (!cy) return;
+              if (i === 0) cy.zoom({ level: cy.zoom() * 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+              else if (i === 1) cy.zoom({ level: cy.zoom() * 0.77, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+              else cy.fit(undefined, 40);
+            }}
+            style={{
+              width: 30, height: 30, borderRadius: 6,
+              background: "#1e1e3a", border: "1px solid #3a3a5a",
+              color: "#ccc", cursor: "pointer", fontSize: 16,
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}
+          >
+            {icon}
+          </button>
+        ))}
+      </div>
       {hoverBtn && (
         <button
           onMouseEnter={() => clearTimeout(hideTimerRef.current)}

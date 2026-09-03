@@ -6,9 +6,11 @@ Requires a running Neo4j instance (set NEO4J_URI env var or use defaults).
 
 import io
 import json
+
 import pytest
 from httpx import AsyncClient, ASGITransport
 
+import app.routers.igj as igj_router
 from app.main import app
 
 CSV_CONTENT = b"source,target,relation,weight\nAlice,Bob,KNOWS,1\nBob,Carol,KNOWS,2\n"
@@ -111,6 +113,45 @@ async def test_import_and_graph(client: AsyncClient):
 
     # Cleanup
     await client.delete(f"/api/datasets/{dataset_id}")
+
+
+def test_person_expansion_stays_centered_at_depth_1(monkeypatch):
+    class FakeResult:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class FakeConn:
+        def __init__(self):
+            self.queries = []
+
+        def execute(self, query, params=None):
+            self.queries.append((query, params))
+            if "SELECT DISTINCT numero_correlativo FROM igj_autoridades" in query and "ANY(?)" in query:
+                return FakeResult([("101",), ("102",)])
+            if "SELECT DISTINCT tipo_documento, numero_documento, apellido_nombre" in query and "ANY(?)" in query:
+                return FakeResult([("1", "12345678", "Ana Torres")])
+            if "JOIN igj_entidades e ON e.numero_correlativo = a.numero_correlativo" in query:
+                return FakeResult([
+                    ("1", "12345678", "Ana Torres", "SOCIO", "101", "Acme SA", "Sociedad", "30-12345678-9"),
+                    ("1", "12345678", "Ana Torres", "REPRESENTANTE", "102", "Beta SRL", "Sociedad", "30-87654321-9"),
+                ])
+            return FakeResult([])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(igj_router.duckdb, "connect", lambda *args, **kwargs: FakeConn())
+
+    graph = igj_router.expand_graph(persona=["1:12345678"], depth=1)
+
+    node_ids = {n.id for n in graph.nodes}
+    assert "p_1_12345678" in node_ids
+    assert "e_101" in node_ids
+    assert "e_102" in node_ids
+    assert len(graph.nodes) <= 4
 
 
 @pytest.mark.asyncio
